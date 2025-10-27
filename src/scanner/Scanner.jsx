@@ -1,7 +1,7 @@
 // src/scanner/Scanner.jsx
 import React, { useEffect, useRef, useState } from 'react';
 import { BrowserMultiFormatReader } from '@zxing/browser';
-import { BarcodeFormat, DecodeHintType } from '@zxing/library';
+import { BarcodeFormat, DecodeHintType, NotFoundException } from '@zxing/library';
 
 export default function Scanner({ onDetected, onUserInteract, fps = 10 }) {
   const videoRef = useRef(null);
@@ -12,10 +12,19 @@ export default function Scanner({ onDetected, onUserInteract, fps = 10 }) {
   const streamRef = useRef(null);
   const mounted = useRef(false);
 
-  // Last decode for throttling duplicates
+  // Manual decode loop handles
+  const decodingRef = useRef(false);
+  const loopTimerRef = useRef(null);
+  const COOLDOWN_OK_MS = 800;     // after a success, pause briefly
+  const SCAN_INTERVAL_MS = 120;   // how often to attempt a decode
+
+  // Performance mode
+  const [fastMode, setFastMode] = useState(true); // Fast (TRY_HARDER off) vs Accurate
+
+  // Throttle duplicate result bursts
   const lastTextRef = useRef('');
   const lastAtRef = useRef(0);
-  const THROTTLE_MS = 1250;
+  const THROTTLE_MS = 1000;
 
   // Camera controls
   const [hasTorch, setHasTorch] = useState(false);
@@ -35,26 +44,24 @@ export default function Scanner({ onDetected, onUserInteract, fps = 10 }) {
   const stopStream = () => {
     try {
       if (streamRef.current) {
-        streamRef.current.getTracks().forEach((t) => {
-          try { t.stop(); } catch {}
-        });
+        streamRef.current.getTracks().forEach((t) => { try { t.stop(); } catch {} });
         streamRef.current = null;
       }
     } catch {}
   };
 
   const safeResetReader = () => {
-    try {
-      const r = readerRef.current;
-      if (r && typeof r.reset === 'function') r.reset();
-    } catch {}
+    try { readerRef.current?.reset?.(); } catch {}
   };
 
-  const buildHints = () => {
+  const buildHints = (fast) => {
     try {
       const hints = new Map();
       hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE]);
-      hints.set(DecodeHintType.TRY_HARDER, true);
+      // Fast mode: turn off TRY_HARDER (major speed boost on clean codes)
+      if (!fast) hints.set(DecodeHintType.TRY_HARDER, true); // only in Accurate mode
+      // Optional: if your QR is always “pure”, uncomment for another speed bump
+      // hints.set(DecodeHintType.PURE_BARCODE, true);
       return hints;
     } catch {
       return undefined;
@@ -63,27 +70,35 @@ export default function Scanner({ onDetected, onUserInteract, fps = 10 }) {
 
   useEffect(() => {
     mounted.current = true;
-    readerRef.current = new BrowserMultiFormatReader(buildHints());
+    readerRef.current = new BrowserMultiFormatReader(buildHints(fastMode));
     return () => {
       mounted.current = false;
+      clearInterval(loopTimerRef.current);
       safeResetReader();
       stopStream();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Rebuild hints when mode changes
+  useEffect(() => {
+    try {
+      readerRef.current = new BrowserMultiFormatReader(buildHints(fastMode));
+      setStatus((s) => `${s.split(' | ')[0]} | Mode: ${fastMode ? 'Fast' : 'Accurate'}`);
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fastMode]);
+
   async function pickRearDeviceId() {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const videos = devices.filter((d) => d.kind === 'videoinput');
       if (videos.length === 0) return undefined;
-
       const rear =
         videos.find((d) => /rear|back|environment/i.test(d.label)) ||
         videos.find((d) => d.label?.toLowerCase?.().includes('wide')) ||
         videos[0];
-
-      return rear ? rear.deviceId : undefined;
+      return rear?.deviceId;
     } catch {
       return undefined;
     }
@@ -122,7 +137,7 @@ export default function Scanner({ onDetected, onUserInteract, fps = 10 }) {
       setZoomMin(min);
       setZoomMax(max);
 
-      const initialZoom = Math.min(max, Math.max(min, (settings.zoom || min) * 1.5));
+      const initialZoom = Math.min(max, Math.max(min, (settings.zoom || min) * 1.35));
       setZoom(initialZoom);
       try { await track.applyConstraints({ advanced: [{ zoom: initialZoom }] }); } catch {}
     } else {
@@ -144,7 +159,6 @@ export default function Scanner({ onDetected, onUserInteract, fps = 10 }) {
   }
 
   const startScanner = async () => {
-    // Let the app prime audio on this user gesture
     try { onUserInteract && onUserInteract(); } catch {}
 
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -155,14 +169,15 @@ export default function Scanner({ onDetected, onUserInteract, fps = 10 }) {
     setStatus('Starting camera...');
     try {
       const deviceId = await pickRearDeviceId();
+      // ↓ Use 1280×720; often faster than 1080p to decode.
       const constraints = {
         video: {
           deviceId: deviceId ? { exact: deviceId } : undefined,
           facingMode: deviceId ? undefined : { ideal: 'environment' },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
           aspectRatio: { ideal: 16 / 9 },
-          frameRate: { ideal: Math.min(30, Math.max(10, fps * 2)) },
+          frameRate: { ideal: 24 }, // 24 is enough and reduces CPU burn
         },
         audio: false,
       };
@@ -181,29 +196,40 @@ export default function Scanner({ onDetected, onUserInteract, fps = 10 }) {
         await videoRef.current.play().catch(() => {});
       }
       setActive(true);
-      setStatus('Scanning...');
+      setStatus(`Scanning... | Mode: ${fastMode ? 'Fast' : 'Accurate'}`);
 
-      const reader = readerRef.current;
-      if (!reader) return;
-
-      await reader.decodeFromVideoDevice(null, videoRef.current, (result, err) => {
-        if (!mounted.current) return;
-        if (result) {
-          const text = result.getText ? result.getText() : result.text;
-          if (text) {
-            // Throttle duplicate triggers of same payload in quick succession
-            const now = Date.now();
-            if (text === lastTextRef.current && now - lastAtRef.current < THROTTLE_MS) {
-              return;
+      // Kick off manual decode loop
+      clearInterval(loopTimerRef.current);
+      loopTimerRef.current = setInterval(async () => {
+        if (!mounted.current || !active) return;
+        if (decodingRef.current) return; // skip if a decode is running
+        decodingRef.current = true;
+        try {
+          // Single-shot decode on current video frame
+          const result = await readerRef.current.decodeOnceFromVideoElement(videoRef.current);
+          if (result) {
+            const text = result.getText ? result.getText() : result.text;
+            if (text) {
+              const now = Date.now();
+              if (!(text === lastTextRef.current && now - lastAtRef.current < THROTTLE_MS)) {
+                lastTextRef.current = text;
+                lastAtRef.current = now;
+                try { onDetected && onDetected(text); } catch {}
+                // pause a moment after a successful scan
+                await new Promise(r => setTimeout(r, COOLDOWN_OK_MS));
+              }
             }
-            lastTextRef.current = text;
-            lastAtRef.current = now;
-
-            try { onDetected && onDetected(text); } catch {}
           }
+        } catch (err) {
+          // NotFoundException = no code in this frame -> ignore silently
+          if (!(err instanceof NotFoundException)) {
+            // Other errors: log lightly in dev
+            // console.debug('decode error', err?.message || err);
+          }
+        } finally {
+          decodingRef.current = false;
         }
-        // ignore errors to keep scanning
-      });
+      }, SCAN_INTERVAL_MS);
     } catch (err) {
       console.error('Camera access error:', err);
       alert('Unable to access camera');
@@ -213,6 +239,8 @@ export default function Scanner({ onDetected, onUserInteract, fps = 10 }) {
 
   const stopScanner = () => {
     setActive(false);
+    clearInterval(loopTimerRef.current);
+    decodingRef.current = false;
     setStatus('Stopped');
     safeResetReader();
     stopStream();
@@ -275,8 +303,23 @@ export default function Scanner({ onDetected, onUserInteract, fps = 10 }) {
         onClick={onVideoClick}
       />
 
-      {/* Camera controls */}
+      {/* Controls */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <button
+          className={`btn ${fastMode ? '' : 'btn-outline'}`}
+          onClick={() => setFastMode(true)}
+          title="Faster on clean codes"
+        >
+          Fast
+        </button>
+        <button
+          className={`btn ${!fastMode ? '' : 'btn-outline'}`}
+          onClick={() => setFastMode(false)}
+          title="More tolerant on damaged/low-contrast codes"
+        >
+          Accurate
+        </button>
+
         {hasTorch && (
           <button className="btn btn-outline" onClick={toggleTorch}>
             {torchOn ? 'Torch Off' : 'Torch On'}
@@ -330,7 +373,7 @@ export default function Scanner({ onDetected, onUserInteract, fps = 10 }) {
       </div>
 
       <div className="status" style={{ fontSize: 11, opacity: 0.7 }}>
-        Tips: ensure good light (use Torch if available), increase Zoom for distance reads, and tap the preview to refocus.
+        Tips: good light (Torch), get closer, use Zoom a bit. “Fast” mode is quickest; switch to “Accurate” for tough codes.
       </div>
     </div>
   );

@@ -113,57 +113,68 @@ export default function App() {
   const [receivedAt, setReceivedAt] = useState('');
   const [loadedAt] = useState('WalvisBay'); // static as requested
 
-  const [pending, setPending] = useState(null);
+  const [pending, setPending] = useState(null); // { serial, raw, capturedAt }
   const [qrExtras, setQrExtras] = useState({ grade: '', railType: '', spec: '', lengthM: '' });
 
+  // Duplicate modal
   const [dupPrompt, setDupPrompt] = useState(null);
+  // Remove modal
   const [removePrompt, setRemovePrompt] = useState(null);
 
-  // pagination + total count
+  // Pagination + total count
   const [totalCount, setTotalCount] = useState(0);
   const [nextCursor, setNextCursor] = useState(null);
   const PAGE_SIZE = 200;
 
+  // Damaged QR mode (manual entry)
+  const [damagedMode, setDamagedMode] = useState(false);
+  const [manualSerial, setManualSerial] = useState('');
+
   // reference to socket (shared)
   const socketRef = useRef(null);
 
-  // ---- DEBUG: show exactly what the client thinks the socket URL/opts are
-  useEffect(() => {
+  // --- Sounds ---
+  const soundsRef = useRef({});
+  function ensureSound(name, dataUri) {
     try {
-      console.log(
-        "[SOCKET from App] uri:",
-        socket?.io?.uri,
-        "opts:",
-        socket?.io?.opts,
-      );
-      // current transport (if connected) / on engine events:
-      if (socket?.io?.engine) {
-        console.log("[SOCKET engine initial transport]", socket.io.engine.transport.name);
-        socket.io.engine.on("upgrade", (t) =>
-          console.log("[SOCKET engine upgrade]", t.name)
-        );
+      if (!soundsRef.current[name]) {
+        const a = new Audio();
+        a.src = dataUri;
+        a.preload = 'auto';
+        soundsRef.current[name] = a;
       }
-    } catch {}
-  }, []);
-
-  // beeps
-  const beepRef = useRef(null);
-  const ensureBeep = (hz = 1500) => {
+      return soundsRef.current[name];
+    } catch {
+      return null;
+    }
+  }
+  function play(name, dataUri) {
+    const a = ensureSound(name, dataUri);
+    if (!a) return;
     try {
-      if (!beepRef.current) {
-        const dataUri = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYBAGZkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZAA=';
-        const audio = new Audio();
-        audio.src = dataUri;
-        beepRef.current = audio;
-      }
-      beepRef.current.playbackRate = Math.max(0.5, Math.min(2, hz / 1500));
-      beepRef.current.currentTime = 0;
-      const p = beepRef.current.play();
+      a.currentTime = 0;
+      const p = a.play();
       if (p && typeof p.then === 'function') p.catch(() => {});
     } catch {}
-  };
-  const okBeep = () => ensureBeep(1500);
-  const warnBeep = () => ensureBeep(800);
+  }
+  // Short “ok” tone for scan success
+  const scanChime = () =>
+    play(
+      'scan',
+      'data:audio/wav;base64,UklGRlIAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYBAGZmZmZmZmZmZmZmZmZmZmZmZmZmZgAA'
+    );
+  // Slightly different tone for “saved”
+  const saveChime = () =>
+    play(
+      'save',
+      'data:audio/wav;base64,UklGRlIAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYBAGZkZmRkZmRkZmZkZmRkZmRkZmZkZgAA'
+    );
+  // Lower tone for warnings/duplicates
+  const warnBuzz = () =>
+    play(
+      'warn',
+      'data:audio/wav;base64,UklGRlIAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYBAGRkZGRkZGRkZGRkZGRkZGRkZGRkZAAA'
+    );
 
   // initial load: total count + first page
   useEffect(() => {
@@ -259,13 +270,23 @@ export default function App() {
   useEffect(() => {
     socketRef.current = socket;
 
-    // Don’t double-connect
     if (!socket.connected) {
       try { socket.connect(); } catch {}
     }
 
     const onNew = (row) => {
       if (!row) return;
+      // If a duplicate arrives from another device, surface info
+      const dupMatches = findDuplicates(row.serial);
+      if (dupMatches.length > 0) {
+        setDupPrompt({
+          serial: String(row.serial).toUpperCase(),
+          matches: dupMatches,
+          candidate: null, // informational from socket
+        });
+        warnBuzz();
+      }
+
       setScans((prev) => {
         const hasId = row.id != null && prev.some((x) => String(x.id) === String(row.id));
         const hasSerial = row.serial && prev.some((x) =>
@@ -297,32 +318,13 @@ export default function App() {
       setStatus('All scans cleared (synced)');
     };
 
-    const onConnect = () => {
-      setStatus('Live sync connected');
-      try {
-        console.log("[SOCKET connected] uri:", socket?.io?.uri, "transport:", socket?.io?.engine?.transport?.name);
-      } catch {}
-    };
-    const onDisconnect = (reason) => {
-      setStatus(`Live sync disconnected (${reason})`);
-      console.log("[SOCKET disconnected]", reason);
-    };
-    const onConnectError = (err) => {
-      setStatus(`Socket error: ${err?.message || err}`);
-      console.log("[SOCKET connect_error]", err);
-    };
-
-    // extra visibility
-    const onRecon = (n) => console.log("[SOCKET reconnect_attempt]", n);
-    const onTransport = () => {
-      try { console.log("[SOCKET transport]", socket.io.engine.transport.name); } catch {}
-    };
+    const onConnect = () => setStatus('Live sync connected');
+    const onDisconnect = (reason) => setStatus(`Live sync disconnected (${reason})`);
+    const onConnectError = (err) => setStatus(`Socket error: ${err?.message || err}`);
 
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
     socket.io?.on?.('error', onConnectError);
-    socket.io?.on?.('reconnect_attempt', onRecon);
-    socket.io?.engine?.on?.('transport', onTransport);
 
     socket.on('new-scan', onNew);
     socket.on('deleted-scan', onDeleted);
@@ -333,8 +335,6 @@ export default function App() {
         socket.off('connect', onConnect);
         socket.off('disconnect', onDisconnect);
         socket.io?.off?.('error', onConnectError);
-        socket.io?.off?.('reconnect_attempt', onRecon);
-        socket.io?.engine?.off?.('transport', onTransport);
 
         socket.off('new-scan', onNew);
         socket.off('deleted-scan', onDeleted);
@@ -356,39 +356,45 @@ export default function App() {
     return scans.filter((r) => String(r.serial || '').trim().toUpperCase() === key);
   };
 
+  // ---- SCAN HANDLER (always show duplicate modal if exists)
   const onDetected = (rawText) => {
     const parsed = parseQrPayload(rawText);
-    const serial = parsed.serial || rawText;
+    const serial = (parsed.serial || rawText || '').trim();
 
-    if (serial) {
-      const matches = findDuplicates(serial);
-      if (matches.length > 0) {
-        warnBeep();
-        setDupPrompt({
-          serial: String(serial).toUpperCase(),
-          matches,
-          candidate: {
-            pending: {
-              serial: String(serial).toUpperCase(),
-              raw: parsed.raw || String(rawText),
-              capturedAt: new Date().toISOString(),
-            },
-            qrExtras: {
-              grade: parsed.grade || '',
-              railType: parsed.railType || '',
-              spec: parsed.spec || '',
-              lengthM: parsed.lengthM || '',
-            },
-          },
-        });
-        setStatus('Duplicate detected — awaiting decision');
-        return;
-      }
+    if (!serial) {
+      warnBuzz();
+      setStatus('Scan unreadable. Use "Damaged QR" for manual entry.');
+      return;
     }
 
-    okBeep();
+    const matches = findDuplicates(serial);
+    if (matches.length > 0) {
+      warnBuzz();
+      setDupPrompt({
+        serial: String(serial).toUpperCase(),
+        matches,
+        candidate: {
+          pending: {
+            serial: String(serial).toUpperCase(),
+            raw: parsed.raw || String(rawText),
+            capturedAt: new Date().toISOString(),
+          },
+          qrExtras: {
+            grade: parsed.grade || '',
+            railType: parsed.railType || '',
+            spec: parsed.spec || '',
+            lengthM: parsed.lengthM || '',
+          },
+        },
+      });
+      setStatus('Duplicate detected — awaiting decision');
+      return;
+    }
+
+    // Successful scan sound + set pending
+    scanChime();
     setPending({
-      serial: parsed.serial || rawText,
+      serial,
       raw: parsed.raw || String(rawText),
       capturedAt: new Date().toISOString(),
     });
@@ -398,24 +404,30 @@ export default function App() {
       spec: parsed.spec || '',
       lengthM: parsed.lengthM || '',
     });
+    setDamagedMode(false);
+    setManualSerial('');
     setStatus('Captured — review & Confirm');
   };
 
+  // ---- Duplicate modal actions
   const handleDupDiscard = () => {
     setDupPrompt(null);
-    setPending(null);
-    setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
     setStatus('Ready');
   };
   const handleDupContinue = () => {
     if (!dupPrompt) return;
-    okBeep();
-    setPending(dupPrompt.candidate.pending);
-    setQrExtras(dupPrompt.candidate.qrExtras);
+    // If this duplicate came from a scan/manual attempt, accept the candidate
+    if (dupPrompt.candidate?.pending) {
+      setPending(dupPrompt.candidate.pending);
+      setQrExtras(dupPrompt.candidate.qrExtras || { grade:'', railType:'', spec:'', lengthM:'' });
+      setDamagedMode(false);
+      setManualSerial('');
+      setStatus('Captured — review & Confirm');
+    }
     setDupPrompt(null);
-    setStatus('Captured — review & Confirm');
   };
 
+  // ---- Remove modal
   const handleRemoveScan = (scanId) => setRemovePrompt(scanId);
   const confirmRemoveScan = async () => {
     if (!removePrompt) return;
@@ -437,14 +449,51 @@ export default function App() {
   };
   const discardRemovePrompt = () => setRemovePrompt(null);
 
+  // ---- Damaged QR toggling
+  const enableDamaged = () => {
+    setDamagedMode(true);
+    setPending(null);
+    setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
+    setStatus('Damaged QR mode — enter serial manually and then Confirm & Save');
+  };
+  const cancelDamaged = () => {
+    setDamagedMode(false);
+    setManualSerial('');
+    setStatus('Ready');
+  };
+
+  // ---- Confirm save (works for scanned OR damaged-mode manual)
   const confirmPending = async () => {
-    if (!pending?.serial || !String(pending.serial).trim()) {
-      alert('Nothing to save yet. Scan a code first.');
+    // Determine candidate serial
+    const candidateSerial = (pending?.serial || '').trim() || (damagedMode ? manualSerial.trim() : '');
+
+    if (!candidateSerial) {
+      alert('Unable to save without scanning a QR.\nIf the QR is damaged, click "Damaged QR" and enter the serial manually, then save.');
+      return;
+    }
+
+    // Always surface duplicates before saving (manual or scanned)
+    const matches = findDuplicates(candidateSerial);
+    if (matches.length > 0 && !dupPrompt) {
+      warnBuzz();
+      setDupPrompt({
+        serial: candidateSerial.toUpperCase(),
+        matches,
+        candidate: {
+          pending: {
+            serial: candidateSerial.toUpperCase(),
+            raw: pending?.raw || candidateSerial,
+            capturedAt: new Date().toISOString(),
+          },
+          qrExtras: { ...qrExtras },
+        },
+      });
+      setStatus('Duplicate detected — awaiting decision');
       return;
     }
 
     const rec = {
-      serial: String(pending.serial).trim(),
+      serial: candidateSerial,
       stage: 'received',
       operator,
       wagon1Id: wagonId1,
@@ -457,7 +506,8 @@ export default function App() {
       railType: qrExtras.railType,
       spec: qrExtras.spec,
       lengthM: qrExtras.lengthM,
-      qrRaw: pending.raw || String(pending.serial),
+      qrRaw: pending?.raw || candidateSerial,
+      damaged: damagedMode ? true : false, // optional marker for UI
     };
 
     try {
@@ -473,19 +523,26 @@ export default function App() {
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
       const newId = data?.id || Date.now();
-      setScans((prev) => [{ id: newId, ...rec }, ...prev]);
+      setScans((prev) => [{ id: newId, ...rec }, ...prev ]);
       setTotalCount(c => c + 1);
 
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
+      setDamagedMode(false);
+      setManualSerial('');
       setStatus('Saved to staged');
+      saveChime();
     } catch (e) {
+      // Offline/failed: queue it to IndexedDB for later
       await idbAdd({ payload: rec });
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
       setTotalCount(c => c + 1);
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
+      setDamagedMode(false);
+      setManualSerial('');
       setStatus('Saved locally (offline) — will sync');
+      saveChime();
     }
   };
 
@@ -526,7 +583,7 @@ export default function App() {
       }
       const dispo = resp.headers.get('Content-Disposition') || '';
       const match = dispo.match(/filename="?([^"]+)"?/i);
-      const filename = match?.[1] || `Master_QR_${Date.now().toISOString?.() || Date.now()}.xlsx`;
+      const filename = match?.[1] || `Master_QR_${Date.now()}.xlsx`;
 
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
@@ -546,6 +603,7 @@ export default function App() {
   };
 
   // ---------- RENDER ----------
+
   if (showStart) {
     return (
       <div style={{ minHeight: '100vh', background: '#fff' }}>
@@ -592,6 +650,33 @@ export default function App() {
         {/* Controls */}
         <section className="card">
           <h3>Controls</h3>
+
+          {/* Damaged QR controls */}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+            {!damagedMode ? (
+              <button className="btn btn-outline" onClick={enableDamaged}>Damaged QR</button>
+            ) : (
+              <>
+                <button className="btn" disabled>Damaged QR Mode</button>
+                <button className="btn btn-outline" onClick={cancelDamaged}>Cancel</button>
+              </>
+            )}
+          </div>
+
+          {/* Manual serial input (only in damaged mode) */}
+          {damagedMode && (
+            <div style={{ marginBottom: 12 }}>
+              <label className="status">Manual Serial (QR damaged)</label>
+              <input
+                className="input"
+                value={manualSerial}
+                onChange={(e) => setManualSerial(e.target.value)}
+                placeholder="Enter serial code exactly"
+                autoFocus
+              />
+            </div>
+          )}
+
           <div className="controls-grid" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
             <div>
               <label className="status">Operator</label>
@@ -639,16 +724,30 @@ export default function App() {
           </div>
 
           <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button className="btn" onClick={confirmPending} disabled={!pending}>Confirm & Save</button>
+            <button className="btn" onClick={confirmPending}>
+              {damagedMode ? 'Confirm & Save (Damaged QR)' : 'Confirm & Save'}
+            </button>
             <button
               className="btn btn-outline"
-              onClick={() => { setPending(null); setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' }); setStatus('Ready'); }}
+              onClick={() => {
+                setPending(null);
+                setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
+                setDamagedMode(false);
+                setManualSerial('');
+                setStatus('Ready');
+              }}
             >
               Discard
             </button>
             <button className="btn" onClick={exportToExcel}>Export to Excel</button>
             <button className="btn" onClick={exportXlsxWithImages}>Export XLSX (with QR images)</button>
           </div>
+
+          {!pending && !damagedMode && (
+            <div className="status" style={{ marginTop: 8 }}>
+              Unable to save without scanning a QR. If the QR is damaged, click <strong>Damaged QR</strong>, type the serial, then click <strong>Confirm & Save</strong>.
+            </div>
+          )}
         </section>
 
         {/* Staged Scans */}
@@ -657,7 +756,10 @@ export default function App() {
           <div className="list">
             {scans.map((s) => (
               <div key={s.id ?? `${s.serial}-${s.timestamp}`} className="row">
-                <div className="title">{s.serial}</div>
+                <div className="title">
+                  {s.serial}
+                  {s.damaged ? <span className="tag" style={{ marginLeft: 8 }}>Damaged</span> : null}
+                </div>
                 <div className="meta">
                   {s.stage} • {s.operator} • {new Date(s.timestamp || Date.now()).toLocaleString()}
                 </div>
@@ -737,8 +839,8 @@ export default function App() {
                   The serial <strong>{dupPrompt.serial}</strong> already exists in the staged list ({dupPrompt.matches.length}).
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-                  <button className="btn btn-outline" onClick={handleDupDiscard}>Discard</button>
-                  <button className="btn" onClick={handleDupContinue}>Continue anyway</button>
+                  <button className="btn btn-outline" onClick={handleDupDiscard}>Dismiss</button>
+                  <button className="btn" onClick={handleDupContinue} disabled={!dupPrompt.candidate}>Continue anyway</button>
                 </div>
               </div>
             </div>

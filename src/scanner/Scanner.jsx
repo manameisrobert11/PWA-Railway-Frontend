@@ -1,380 +1,738 @@
-// src/scanner/Scanner.jsx
-import React, { useEffect, useRef, useState } from 'react';
-import { BrowserMultiFormatReader } from '@zxing/browser';
-import { BarcodeFormat, DecodeHintType, NotFoundException } from '@zxing/library';
+// src/App.jsx
+import React, { useEffect, useState, useRef, useMemo } from 'react';
+import { socket } from './socket';
+import Scanner from './scanner/Scanner.jsx';
+import StartPage from './StartPage.jsx';
+import './app.css';
 
-export default function Scanner({ onDetected, onUserInteract, fps = 10 }) {
-  const videoRef = useRef(null);
-  const [active, setActive] = useState(false);
-  const [status, setStatus] = useState('Idle');
+const API_BASE = import.meta.env.VITE_API_BASE || '';
+const api = (p) => {
+  const path = p.startsWith('/') ? p : `/${p}`;
+  return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
+};
 
-  const readerRef = useRef(null);
-  const streamRef = useRef(null);
-  const mounted = useRef(false);
+// ---- QR parsing (length/spec/railType; no grade duplication) ----
+function parseQrPayload(raw) {
+  const clean = String(raw || '')
+    .replace(/[^\x20-\x7E]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 
-  // Manual decode loop handles
-  const decodingRef = useRef(false);
-  const loopTimerRef = useRef(null);
-  const COOLDOWN_OK_MS = 800;     // after a success, pause briefly
-  const SCAN_INTERVAL_MS = 120;   // how often to attempt a decode
+  const tokens = clean.split(/[ \t\r\n|,:/]+/).filter(Boolean);
 
-  // Performance mode
-  const [fastMode, setFastMode] = useState(true); // Fast (TRY_HARDER off) vs Accurate
+  const serial =
+    tokens.find((t) => /^[A-Z0-9]{12,}$/.test(t)) ||
+    tokens.find((t) => /^[A-Z0-9]{8,}$/.test(t)) ||
+    '';
 
-  // Throttle duplicate result bursts
-  const lastTextRef = useRef('');
-  const lastAtRef = useRef(0);
-  const THROTTLE_MS = 1000;
+  let grade = (tokens.find((t) => /^SAR\d{2}$/i.test(t)) || '').toUpperCase();
 
-  // Camera controls
-  const [hasTorch, setHasTorch] = useState(false);
-  const [torchOn, setTorchOn] = useState(false);
+  let railType = '';
+  for (const t of tokens) {
+    const u = t.toUpperCase();
+    if (/^R\d{3}(?:L?HT)?$/.test(u)) { railType = u; break; }
+  }
 
-  const [hasZoom, setHasZoom] = useState(false);
-  const [zoomMin, setZoomMin] = useState(1);
-  const [zoomMax, setZoomMax] = useState(1);
-  const [zoom, setZoom] = useState(1);
+  let spec = '';
+  for (let i = 0; i < tokens.length; i++) {
+    const u = tokens[i].toUpperCase();
+    if (/^(ATX|ATA|AREMA|UIC|EN\d*|GB\d*)$/.test(u)) {
+      const next = tokens[i + 1] || '';
+      if (/^[A-Z0-9-]{3,}$/i.test(next)) spec = `${tokens[i]} ${next}`;
+      else spec = tokens[i];
+      break;
+    }
+  }
 
-  const [hasExposureComp, setHasExposureComp] = useState(false);
-  const [expMin, setExpMin] = useState(0);
-  const [expMax, setExpMax] = useState(0);
-  const [expStep, setExpStep] = useState(1);
-  const [exposure, setExposure] = useState(0);
+  const lengthM = tokens.find((t) => /^\d{1,3}(\.\d+)?m$/i.test(t)) || '';
 
-  const stopStream = () => {
-    try {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((t) => { try { t.stop(); } catch {} });
-        streamRef.current = null;
+  if (grade && railType && grade === railType) grade = '';
+
+  return { raw: clean, serial, grade, railType, spec, lengthM };
+}
+
+// ---- IndexedDB offline queue ----
+const DB_NAME = 'rail-offline';
+const DB_VERSION = 1;
+const STORE = 'queue';
+
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE)) {
+        db.createObjectStore(STORE, { keyPath: 'id', autoIncrement: true });
       }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbAdd(item) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).add(item);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function idbAll() {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readonly');
+    const req = tx.objectStore(STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbClear(ids) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    const store = tx.objectStore(STORE);
+    (ids || []).forEach(id => store.delete(id));
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export default function App() {
+  const [status, setStatus] = useState('Ready');
+  const [scans, setScans] = useState([]);
+  const [showStart, setShowStart] = useState(false); // you said you're not using start page
+
+  const [operator, setOperator] = useState('Clerk A');
+  const [wagonId1, setWagonId1] = useState('');
+  const [wagonId2, setWagonId2] = useState('');
+  const [wagonId3, setWagonId3] = useState('');
+  const [receivedAt, setReceivedAt] = useState('');
+  const [loadedAt] = useState('WalvisBay'); // static
+
+  const [pending, setPending] = useState(null);
+  const [qrExtras, setQrExtras] = useState({ grade: '', railType: '', spec: '', lengthM: '' });
+
+  const [dupPrompt, setDupPrompt] = useState(null);
+  const [removePrompt, setRemovePrompt] = useState(null);
+
+  // Manual entry (Damaged QR)
+  const [manualSerial, setManualSerial] = useState('');
+  const [manualGrade, setManualGrade] = useState('');
+  const [manualRailType, setManualRailType] = useState('');
+  const [manualSpec, setManualSpec] = useState('');
+  const [manualLength, setManualLength] = useState('');
+
+  // pagination + total count
+  const [totalCount, setTotalCount] = useState(0);
+  const [nextCursor, setNextCursor] = useState(null);
+  const PAGE_SIZE = 200;
+
+  // Socket ref
+  const socketRef = useRef(null);
+
+  // ----- Audio (beep only on successful QR scan) -----
+  const beepRef = useRef(null);
+  const audioUnlockedRef = useRef(false);
+
+  const ensureBeep = (hz = 1500) => {
+    try {
+      if (!beepRef.current) {
+        // short click-like wav
+        const dataUri = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYBAGZkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZAA=';
+        const audio = new Audio();
+        audio.src = dataUri;
+        audio.preload = 'auto';
+        beepRef.current = audio;
+      }
+      // Playback rate nudged by freq
+      beepRef.current.playbackRate = Math.max(0.75, Math.min(2, hz / 1500));
+      beepRef.current.currentTime = 0;
+      const p = beepRef.current.play();
+      if (p && typeof p.then === 'function') p.catch(() => {});
     } catch {}
   };
 
-  const safeResetReader = () => {
-    try { readerRef.current?.reset?.(); } catch {}
-  };
-
-  const buildHints = (fast) => {
+  const unlockAudio = () => {
+    if (audioUnlockedRef.current) return;
     try {
-      const hints = new Map();
-      hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE]);
-      // Fast mode: turn off TRY_HARDER (major speed boost on clean codes)
-      if (!fast) hints.set(DecodeHintType.TRY_HARDER, true); // only in Accurate mode
-      // Optional: if your QR is always “pure”, uncomment for another speed bump
-      // hints.set(DecodeHintType.PURE_BARCODE, true);
-      return hints;
-    } catch {
-      return undefined;
-    }
+      ensureBeep(1200); // attempt on gesture
+      audioUnlockedRef.current = true;
+    } catch {}
   };
 
+  // initial load: total count + first page
   useEffect(() => {
-    mounted.current = true;
-    readerRef.current = new BrowserMultiFormatReader(buildHints(fastMode));
-    return () => {
-      mounted.current = false;
-      clearInterval(loopTimerRef.current);
-      safeResetReader();
-      stopStream();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    (async () => {
+      try {
+        const [countResp, pageResp] = await Promise.all([
+          fetch(api('/staged/count')),
+          fetch(api(`/staged?limit=${PAGE_SIZE}`))
+        ]);
+        const countData = await countResp.json().catch(()=>({count:0}));
+        const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
+
+        // normalize keys
+        const normalized = (pageData.rows || []).map((r) => ({
+          ...r,
+          wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
+          wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
+          wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
+          receivedAt: r.receivedAt ?? r.recievedAt ?? '',
+          loadedAt: r.loadedAt ?? '',
+        }));
+
+        setScans(normalized);
+        setTotalCount(countData.count ?? pageData.total ?? 0);
+        setNextCursor(pageData.nextCursor ?? null);
+      } catch (e) {
+        console.error(e);
+      }
+    })();
   }, []);
 
-  // Rebuild hints when mode changes
+  const loadMore = async () => {
+    if (!nextCursor) return;
+    const resp = await fetch(api(`/staged?limit=${PAGE_SIZE}&cursor=${nextCursor}`));
+    const data = await resp.json().catch(()=>({rows:[], nextCursor:null}));
+
+    const more = (data.rows || []).map((r) => ({
+      ...r,
+      wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
+      wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
+      wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
+      receivedAt: r.receivedAt ?? r.recievedAt ?? '',
+      loadedAt: r.loadedAt ?? '',
+    }));
+
+    setScans(prev => [...prev, ...more]);
+    setNextCursor(data.nextCursor ?? null);
+  };
+
+  // Auto-sync offline queue when online
   useEffect(() => {
-    try {
-      readerRef.current = new BrowserMultiFormatReader(buildHints(fastMode));
-      setStatus((s) => `${s.split(' | ')[0]} | Mode: ${fastMode ? 'Fast' : 'Accurate'}`);
-    } catch {}
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fastMode]);
-
-  async function pickRearDeviceId() {
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videos = devices.filter((d) => d.kind === 'videoinput');
-      if (videos.length === 0) return undefined;
-      const rear =
-        videos.find((d) => /rear|back|environment/i.test(d.label)) ||
-        videos.find((d) => d.label?.toLowerCase?.().includes('wide')) ||
-        videos[0];
-      return rear?.deviceId;
-    } catch {
-      return undefined;
+    async function flushQueue() {
+      try {
+        const items = await idbAll();
+        if (items.length === 0) return;
+        const payload = items.map(x => x.payload);
+        const resp = await fetch(api('/scans/bulk'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: payload })
+        });
+        if (resp.ok) {
+          await idbClear(items.map(x => x.id));
+          setTotalCount(c => c + payload.length);
+          // pull fresh page
+          try {
+            const pageResp = await fetch(api(`/staged?limit=${PAGE_SIZE}`));
+            const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
+            const normalized = (pageData.rows || []).map((r) => ({
+              ...r,
+              wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
+              wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
+              wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
+              receivedAt: r.receivedAt ?? r.recievedAt ?? '',
+              loadedAt: r.loadedAt ?? '',
+            }));
+            setScans(normalized);
+            setNextCursor(pageData.nextCursor ?? null);
+            setTotalCount(pageData.total ?? normalized.length);
+          } catch {}
+        }
+      } catch (e) {
+        console.warn('Offline queue flush failed:', e.message);
+      }
     }
-  }
 
-  async function applyTrackEnhancements(track) {
-    if (!track?.applyConstraints) return;
+    window.addEventListener('online', flushQueue);
+    flushQueue();
+    return () => window.removeEventListener('online', flushQueue);
+  }, []);
 
-    const caps = track.getCapabilities?.() || {};
-    const settings = track.getSettings?.() || {};
+  // Live sync via shared Socket.IO client
+  useEffect(() => {
+    socketRef.current = socket;
+    try { socket.connect(); } catch {}
 
-    try {
-      await track.applyConstraints({
-        advanced: [
-          { focusMode: 'continuous' },
-          { exposureMode: 'continuous' },
-          { whiteBalanceMode: 'continuous' },
-        ],
+    const onNew = (row) => {
+      if (!row) return;
+      setScans((prev) => {
+        const hasId = row.id != null && prev.some((x) => String(x.id) === String(row.id));
+        const hasSerial = row.serial && prev.some((x) =>
+          String(x.serial).trim().toUpperCase() === String(row.serial).trim().toUpperCase()
+        );
+        if (hasId || hasSerial) return prev;
+        return [{ ...row }, ...prev];
       });
-    } catch {}
+      setTotalCount((c) => c + 1);
+    };
 
-    // Torch
-    if (typeof caps.torch === 'boolean') {
-      setHasTorch(true);
-      try { await track.applyConstraints({ advanced: [{ torch: false }] }); } catch {}
-    } else {
-      setHasTorch(false);
+    const onDeleted = ({ id }) => {
+      if (id == null) return;
+      setScans((prev) => {
+        const before = prev.length;
+        const next = prev.filter((x) => String(x.id) !== String(id));
+        if (next.length !== before) {
+          setTotalCount((c) => Math.max(0, c - 1));
+          setStatus('Scan removed (synced)');
+        }
+        return next;
+      });
+    };
+
+    const onCleared = () => {
+      setScans([]); setTotalCount(0); setNextCursor(null);
+      setStatus('All scans cleared (synced)');
+    };
+
+    const onConnect = () => setStatus('Live sync connected');
+    const onDisconnect = (reason) => setStatus(`Live sync disconnected (${reason})`);
+    const onConnectError = (err) => setStatus(`Socket error: ${err?.message || err}`);
+
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.io?.on?.('error', onConnectError);
+
+    socket.on('new-scan', onNew);
+    socket.on('deleted-scan', onDeleted);
+    socket.on('cleared-scans', onCleared);
+
+    return () => {
+      try {
+        socket.off('connect', onConnect);
+        socket.off('disconnect', onDisconnect);
+        socket.io?.off?.('error', onConnectError);
+        socket.off('new-scan', onNew);
+        socket.off('deleted-scan', onDeleted);
+        socket.off('cleared-scans', onCleared);
+      } catch {}
+      socketRef.current = null;
+    };
+  }, []);
+
+  // Fast membership helper
+  const scanSerialSet = useMemo(() => {
+    const s = new Set();
+    for (const r of scans) if (r?.serial) s.add(String(r.serial).trim().toUpperCase());
+    return s;
+  }, [scans]);
+
+  const findDuplicates = (serial) => {
+    const key = String(serial || '').trim().toUpperCase();
+    if (!key) return [];
+    return scans.filter((r) => String(r.serial || '').trim().toUpperCase() === key);
+  };
+
+  // ---- QR SCAN HANDLER (beep only here) ----
+  const onDetected = (rawText) => {
+    const parsed = parseQrPayload(rawText);
+    const serial = parsed.serial || rawText;
+
+    if (serial) {
+      const matches = findDuplicates(serial);
+      if (matches.length > 0) {
+        // Duplicate always shows prompt
+        setDupPrompt({
+          serial: String(serial).toUpperCase(),
+          matches,
+          candidate: {
+            pending: {
+              serial: String(serial).toUpperCase(),
+              raw: parsed.raw || String(rawText),
+              capturedAt: new Date().toISOString(),
+            },
+            qrExtras: {
+              grade: parsed.grade || '',
+              railType: parsed.railType || '',
+              spec: parsed.spec || '',
+              lengthM: parsed.lengthM || '',
+            },
+          },
+        });
+        setStatus('Duplicate detected — awaiting decision');
+        // successful scan still happened -> beep
+        ensureBeep(1500);
+        return;
+      }
     }
 
-    // Zoom
-    const zoomCaps = caps.zoom;
-    if (typeof zoomCaps === 'number' || (zoomCaps && typeof zoomCaps.min === 'number')) {
-      const min = (zoomCaps.min ?? 1);
-      const max = (zoomCaps.max ?? Math.max(1, settings.zoom || 1));
-      setHasZoom(true);
-      setZoomMin(min);
-      setZoomMax(max);
+    // Successful new scan -> beep
+    ensureBeep(1500);
 
-      const initialZoom = Math.min(max, Math.max(min, (settings.zoom || min) * 1.35));
-      setZoom(initialZoom);
-      try { await track.applyConstraints({ advanced: [{ zoom: initialZoom }] }); } catch {}
-    } else {
-      setHasZoom(false);
+    setPending({
+      serial: parsed.serial || rawText,
+      raw: parsed.raw || String(rawText),
+      capturedAt: new Date().toISOString(),
+    });
+    setQrExtras({
+      grade: parsed.grade || '',
+      railType: parsed.railType || '',
+      spec: parsed.spec || '',
+      lengthM: parsed.lengthM || '',
+    });
+    setStatus('Captured — review & Confirm');
+  };
+
+  const onUserInteract = () => {
+    unlockAudio(); // called by Scanner when Start Scanner is tapped
+  };
+
+  const handleDupDiscard = () => {
+    setDupPrompt(null);
+    setPending(null);
+    setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
+    setStatus('Ready');
+  };
+  const handleDupContinue = () => {
+    if (!dupPrompt) return;
+    setPending(dupPrompt.candidate.pending);
+    setQrExtras(dupPrompt.candidate.qrExtras);
+    setDupPrompt(null);
+    setStatus('Captured — review & Confirm');
+  };
+
+  const handleRemoveScan = (scanId) => setRemovePrompt(scanId);
+  const confirmRemoveScan = async () => {
+    if (!removePrompt) return;
+    try {
+      const resp = await fetch(api(`/staged/${removePrompt}`), { method: 'DELETE' });
+      if (!resp.ok) throw new Error(await resp.text().catch(() => 'Failed to remove scan'));
+      setScans((prev) => prev.filter((scan) => scan.id !== removePrompt));
+      setTotalCount(c => Math.max(0, c - 1));
+      setRemovePrompt(null);
+      setStatus('Scan removed successfully');
+    } catch (e) {
+      console.error(e);
+      alert(e.message || 'Failed to remove scan');
+      setRemovePrompt(null);
     }
+  };
+  const discardRemovePrompt = () => setRemovePrompt(null);
 
-    // Exposure compensation
-    const expCaps = caps.exposureCompensation;
-    if (expCaps && (typeof expCaps.min === 'number' || typeof expCaps.max === 'number')) {
-      const { min = -2, max = 2, step = 1 } = expCaps;
-      setHasExposureComp(true);
-      setExpMin(min);
-      setExpMax(max);
-      setExpStep(step);
-      setExposure(settings.exposureCompensation ?? 0);
-    } else {
-      setHasExposureComp(false);
-    }
-  }
-
-  const startScanner = async () => {
-    try { onUserInteract && onUserInteract(); } catch {}
-
-    if (!navigator.mediaDevices?.getUserMedia) {
-      alert('Camera API not supported');
+  const confirmPending = async () => {
+    if (!pending?.serial || !String(pending.serial).trim()) {
+      alert('Nothing to save yet. Scan a QR first. If it is damaged, use “Save Damaged QR”.');
       return;
     }
 
-    setStatus('Starting camera...');
+    const rec = {
+      serial: String(pending.serial).trim(),
+      stage: 'received',
+      operator,
+      wagon1Id: wagonId1,
+      wagon2Id: wagonId2,
+      wagon3Id: wagonId3,
+      receivedAt,
+      loadedAt,
+      timestamp: new Date().toISOString(),
+      grade: qrExtras.grade,
+      railType: qrExtras.railType,
+      spec: qrExtras.spec,
+      lengthM: qrExtras.lengthM,
+      qrRaw: pending.raw || String(pending.serial),
+    };
+
     try {
-      const deviceId = await pickRearDeviceId();
-      // ↓ Use 1280×720; often faster than 1080p to decode.
-      const constraints = {
-        video: {
-          deviceId: deviceId ? { exact: deviceId } : undefined,
-          facingMode: deviceId ? undefined : { ideal: 'environment' },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          aspectRatio: { ideal: 16 / 9 },
-          frameRate: { ideal: 24 }, // 24 is enough and reduces CPU burn
-        },
-        audio: false,
-      };
+      const resp = await fetch(api('/scan'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(rec),
+      });
+      const data = await resp.json().catch(()=>null);
+      if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      if (!mounted.current) return;
-      streamRef.current = stream;
+      const newId = data?.id || Date.now();
+      setScans((prev) => [{ id: newId, ...rec }, ...prev]);
+      setTotalCount(c => c + 1);
 
-      const track = stream.getVideoTracks?.()[0];
-      await applyTrackEnhancements(track);
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.setAttribute('playsInline', 'true');
-        videoRef.current.setAttribute('muted', 'true');
-        await videoRef.current.play().catch(() => {});
-      }
-      setActive(true);
-      setStatus(`Scanning... | Mode: ${fastMode ? 'Fast' : 'Accurate'}`);
-
-      // Kick off manual decode loop
-      clearInterval(loopTimerRef.current);
-      loopTimerRef.current = setInterval(async () => {
-        if (!mounted.current || !active) return;
-        if (decodingRef.current) return; // skip if a decode is running
-        decodingRef.current = true;
-        try {
-          // Single-shot decode on current video frame
-          const result = await readerRef.current.decodeOnceFromVideoElement(videoRef.current);
-          if (result) {
-            const text = result.getText ? result.getText() : result.text;
-            if (text) {
-              const now = Date.now();
-              if (!(text === lastTextRef.current && now - lastAtRef.current < THROTTLE_MS)) {
-                lastTextRef.current = text;
-                lastAtRef.current = now;
-                try { onDetected && onDetected(text); } catch {}
-                // pause a moment after a successful scan
-                await new Promise(r => setTimeout(r, COOLDOWN_OK_MS));
-              }
-            }
-          }
-        } catch (err) {
-          // NotFoundException = no code in this frame -> ignore silently
-          if (!(err instanceof NotFoundException)) {
-            // Other errors: log lightly in dev
-            // console.debug('decode error', err?.message || err);
-          }
-        } finally {
-          decodingRef.current = false;
-        }
-      }, SCAN_INTERVAL_MS);
-    } catch (err) {
-      console.error('Camera access error:', err);
-      alert('Unable to access camera');
-      setStatus('Error starting camera');
-    }
-  };
-
-  const stopScanner = () => {
-    setActive(false);
-    clearInterval(loopTimerRef.current);
-    decodingRef.current = false;
-    setStatus('Stopped');
-    safeResetReader();
-    stopStream();
-  };
-
-  const toggleTorch = async () => {
-    try {
-      const track = streamRef.current?.getVideoTracks?.()[0];
-      if (!track || !track.applyConstraints) return;
-      const next = !torchOn;
-      await track.applyConstraints({ advanced: [{ torch: next }] });
-      setTorchOn(next);
+      setPending(null);
+      setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
+      setStatus('Saved to staged');
     } catch (e) {
-      console.warn('Torch not supported:', e?.message);
+      // Offline/failed: queue to IndexedDB for later
+      await idbAdd({ payload: rec });
+      setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
+      setTotalCount(c => c + 1);
+      setPending(null);
+      setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
+      setStatus('Saved locally (offline) — will sync');
     }
   };
 
-  const onZoomChange = async (v) => {
-    const val = parseFloat(v);
-    setZoom(val);
+  // Save Damaged QR (manual)
+  const saveDamaged = async () => {
+    if (!manualSerial.trim()) {
+      alert('Unable to save: enter Serial or scan a QR.');
+      return;
+    }
+
+    const rec = {
+      serial: manualSerial.trim(),
+      stage: 'received',
+      operator,
+      wagon1Id: wagonId1,
+      wagon2Id: wagonId2,
+      wagon3Id: wagonId3,
+      receivedAt,
+      loadedAt,
+      timestamp: new Date().toISOString(),
+      grade: manualGrade.trim(),
+      railType: manualRailType.trim(),
+      spec: manualSpec.trim(),
+      lengthM: manualLength.trim(),
+      qrRaw: manualSerial.trim(), // fallback
+    };
+
+    // If duplicate, warn (but allow save)
+    const matches = findDuplicates(rec.serial);
+    if (matches.length > 0 && !confirm(`Duplicate found (${matches.length}) — Save anyway?`)) {
+      return;
+    }
+
     try {
-      const track = streamRef.current?.getVideoTracks?.()[0];
-      if (!track?.applyConstraints) return;
-      await track.applyConstraints({ advanced: [{ zoom: val }] });
+      const resp = await fetch(api('/scan'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(rec),
+      });
+      const data = await resp.json().catch(()=>null);
+      if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
+
+      const newId = data?.id || Date.now();
+      setScans((prev) => [{ id: newId, ...rec }, ...prev]);
+      setTotalCount((c) => c + 1);
+
+      // clear manual fields
+      setManualSerial('');
+      setManualGrade('');
+      setManualRailType('');
+      setManualSpec('');
+      setManualLength('');
+      setStatus('Damaged QR saved');
     } catch (e) {
-      console.warn('Zoom not supported:', e?.message);
+      await idbAdd({ payload: rec });
+      setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
+      setTotalCount((c) => c + 1);
+      setManualSerial('');
+      setManualGrade('');
+      setManualRailType('');
+      setManualSpec('');
+      setManualLength('');
+      setStatus('Damaged QR saved locally (offline) — will sync');
     }
   };
 
-  const onExposureChange = async (v) => {
-    const val = parseFloat(v);
-    setExposure(val);
-    try {
-      const track = streamRef.current?.getVideoTracks?.()[0];
-      if (!track?.applyConstraints) return;
-      await track.applyConstraints({ advanced: [{ exposureCompensation: val }] });
-    } catch (e) {
-      console.warn('Exposure compensation not supported:', e?.message);
-    }
-  };
-
-  const onVideoClick = async () => {
-    try {
-      const track = streamRef.current?.getVideoTracks?.()[0];
-      if (!track?.applyConstraints) return;
-      await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
-    } catch {}
-  };
-
+  // ---------- RENDER ----------
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div className="status" style={{ fontSize: 12, opacity: 0.8 }}>{status}</div>
-
-      <video
-        ref={videoRef}
-        style={{ width: '100%', borderRadius: 8, background: '#000' }}
-        muted
-        playsInline
-        autoPlay
-        onClick={onVideoClick}
-      />
-
-      {/* Controls */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-        <button
-          className={`btn ${fastMode ? '' : 'btn-outline'}`}
-          onClick={() => setFastMode(true)}
-          title="Faster on clean codes"
-        >
-          Fast
-        </button>
-        <button
-          className={`btn ${!fastMode ? '' : 'btn-outline'}`}
-          onClick={() => setFastMode(false)}
-          title="More tolerant on damaged/low-contrast codes"
-        >
-          Accurate
-        </button>
-
-        {hasTorch && (
-          <button className="btn btn-outline" onClick={toggleTorch}>
-            {torchOn ? 'Torch Off' : 'Torch On'}
-          </button>
-        )}
-
-        {hasZoom && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <label className="status" style={{ minWidth: 44 }}>Zoom</label>
-            <input
-              type="range"
-              min={zoomMin}
-              max={zoomMax}
-              step="0.1"
-              value={zoom}
-              onChange={(e) => onZoomChange(e.target.value)}
-            />
-            <span className="status">{zoom.toFixed(1)}×</span>
+    <div className="container" style={{ paddingTop: 20, paddingBottom: 20 }}>
+      <header className="app-header">
+        <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div className="logo" />
+            <div>
+              <div className="title">Rail Inventory</div>
+              <div className="status">{status}</div>
+            </div>
           </div>
-        )}
+        </div>
+      </header>
 
-        {hasExposureComp && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <label className="status" style={{ minWidth: 70 }}>Exposure</label>
-            <input
-              type="range"
-              min={expMin}
-              max={expMax}
-              step={expStep || 1}
-              value={exposure}
-              onChange={(e) => onExposureChange(e.target.value)}
-            />
-            <span className="status">{exposure}</span>
+      <div className="grid" style={{ marginTop: 20 }}>
+        {/* Scanner */}
+        <section className="card">
+          <h3>Scanner</h3>
+          <Scanner onDetected={onDetected} onUserInteract={onUserInteract} />
+          {pending && (
+            <div className="notice" style={{ marginTop: 10 }}>
+              <div><strong>Pending Serial:</strong> {pending.serial}</div>
+              <div className="meta">Captured at: {new Date(pending.capturedAt).toLocaleString()}</div>
+            </div>
+          )}
+        </section>
+
+        {/* Controls + Manual Entry */}
+        <section className="card">
+          <h3>Controls & Manual (Damaged QR)</h3>
+
+          {/* Operator / Wagon / Locations */}
+          <div className="controls-grid" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+            <div>
+              <label className="status">Operator</label>
+              <input className="input" value={operator} onChange={(e) => setOperator(e.target.value)} />
+            </div>
+
+            <div>
+              <label className="status">Wagon ID</label>
+              <input className="input" value={wagonId1} onChange={(e) => setWagonId1(e.target.value)} placeholder="e.g. WGN-0123" />
+            </div>
+            <div>
+              <label className="status">Wagon ID</label>
+              <input className="input" value={wagonId2} onChange={(e) => setWagonId2(e.target.value)} placeholder="e.g. WGN-0456" />
+            </div>
+            <div>
+              <label className="status">Wagon ID</label>
+              <input className="input" value={wagonId3} onChange={(e) => setWagonId3(e.target.value)} placeholder="e.g. WGN-0789" />
+            </div>
+
+            <div>
+              <label className="status">Received at</label>
+              <input className="input" value={receivedAt} onChange={(e) => setReceivedAt(e.target.value)} placeholder="" />
+            </div>
+            <div>
+              <label className="status">Loaded at</label>
+              <input className="input" value={loadedAt} readOnly />
+            </div>
+
+            <div>
+              <label className="status">Grade</label>
+              <input className="input" value={qrExtras.grade} readOnly />
+            </div>
+            <div>
+              <label className="status">Rail Type</label>
+              <input className="input" value={qrExtras.railType} readOnly />
+            </div>
+            <div>
+              <label className="status">Spec</label>
+              <input className="input" value={qrExtras.spec} readOnly />
+            </div>
+            <div>
+              <label className="status">Length</label>
+              <input className="input" value={qrExtras.lengthM} readOnly />
+            </div>
           </div>
-        )}
+
+          {/* Actions (QR path) */}
+          <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn" onClick={confirmPending} disabled={!pending}>Confirm & Save</button>
+            <button
+              className="btn btn-outline"
+              onClick={() => { setPending(null); setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' }); setStatus('Ready'); }}
+            >
+              Discard
+            </button>
+          </div>
+
+          <hr style={{ margin: '16px 0', borderColor: 'var(--border)' }} />
+
+          {/* Manual Entry for Damaged QR */}
+          <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+            <div>
+              <label className="status">Serial (Damaged QR)</label>
+              <input className="input" value={manualSerial} onChange={(e) => setManualSerial(e.target.value)} placeholder="Enter serial manually" />
+            </div>
+            <div>
+              <label className="status">Rail Type</label>
+              <input className="input" value={manualRailType} onChange={(e) => setManualRailType(e.target.value)} placeholder="e.g. R260HT" />
+            </div>
+            <div>
+              <label className="status">Grade</label>
+              <input className="input" value={manualGrade} onChange={(e) => setManualGrade(e.target.value)} placeholder="e.g. SAR50" />
+            </div>
+            <div>
+              <label className="status">Spec</label>
+              <input className="input" value={manualSpec} onChange={(e) => setManualSpec(e.target.value)} placeholder="e.g. AREMA 2020" />
+            </div>
+            <div>
+              <label className="status">Length</label>
+              <input className="input" value={manualLength} onChange={(e) => setManualLength(e.target.value)} placeholder="e.g. 12m" />
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <button className="btn" onClick={saveDamaged}>Save Damaged QR</button>
+          </div>
+        </section>
+
+        {/* Staged Scans */}
+        <section className="card">
+          <h3>Staged Scans ({totalCount})</h3>
+          <div className="list">
+            {scans.map((s) => (
+              <div key={s.id ?? `${s.serial}-${s.timestamp}`} className="row">
+                <div className="title">{s.serial}</div>
+                <div className="meta">
+                  {s.stage} • {s.operator} • {new Date(s.timestamp || Date.now()).toLocaleString()}
+                </div>
+
+                {(s.wagonId1 || s.wagonId2 || s.wagonId3) && (
+                  <div className="meta">Wagon IDs: {[s.wagonId1, s.wagonId2, s.wagonId3].filter(Boolean).join(' • ')}</div>
+                )}
+
+                {(s.receivedAt || s.loadedAt) && (
+                  <div className="meta">
+                    {s.receivedAt ? `Received at: ${s.receivedAt}` : ''}
+                    {s.receivedAt && s.loadedAt ? ' • ' : ''}
+                    {s.loadedAt ? `Loaded at: ${s.loadedAt}` : ''}
+                  </div>
+                )}
+
+                <div className="meta">
+                  {[s.grade, s.railType, s.spec, s.lengthM].filter(Boolean).join(' • ')}
+                </div>
+
+                <button className="btn btn-outline" onClick={() => handleRemoveScan(s.id)}>Remove</button>
+              </div>
+            ))}
+          </div>
+
+          {nextCursor && (
+            <div style={{ marginTop: 10 }}>
+              <button className="btn btn-outline" onClick={loadMore}>Load more</button>
+            </div>
+          )}
+        </section>
       </div>
 
-      <div style={{ display: 'flex', gap: 8 }}>
-        {!active ? (
-          <button
-            className="btn"
-            onClick={startScanner}
-            onPointerDown={onUserInteract}
-            onKeyDown={onUserInteract}
-          >
-            Start Scanner
-          </button>
-        ) : (
-          <button className="btn btn-outline" onClick={stopScanner}>Stop Scanner</button>
-        )}
-      </div>
+      <footer className="footer">
+        <div className="footer-inner">
+          <span>© {new Date().getFullYear()} Top Notch Solutions</span>
+          <span className="tag">Rail Inventory • v1</span>
+        </div>
+      </footer>
 
-      <div className="status" style={{ fontSize: 11, opacity: 0.7 }}>
-        Tips: good light (Torch), get closer, use Zoom a bit. “Fast” mode is quickest; switch to “Accurate” for tough codes.
-      </div>
+      {/* Remove confirmation */}
+      {removePrompt && (
+        <div role="dialog" aria-modal="true"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}>
+          <div className="card" style={{ maxWidth: 520, width: '100%', border: '1px solid var(--border)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(220,38,38,.1)', color: 'rgb(220,38,38)', fontSize: 22 }}>⚠️</div>
+              <div style={{ flex: 1 }}>
+                <h3 style={{ margin: 0 }}>Are you sure?</h3>
+                <div className="status" style={{ marginTop: 6 }}>Remove this staged scan?</div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+                  <button className="btn btn-outline" onClick={discardRemovePrompt}>Cancel</button>
+                  <button className="btn" onClick={confirmRemoveScan}>Confirm</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate modal */}
+      {dupPrompt && (
+        <div role="dialog" aria-modal="true"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}>
+          <div className="card" style={{ maxWidth: 560, width: '100%', border: '1px solid var(--border)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(251,191,36,.15)', color: 'rgb(202,138,4)', fontSize: 22 }}>⚠️</div>
+              <div style={{ flex: 1 }}>
+                <h3 style={{ margin: 0 }}>Duplicate detected</h3>
+                <div className="status" style={{ marginTop: 6 }}>
+                  The serial <strong>{dupPrompt.serial}</strong> already exists in the staged list ({dupPrompt.matches.length}).
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+                  <button className="btn btn-outline" onClick={handleDupDiscard}>Discard</button>
+                  <button className="btn" onClick={handleDupContinue}>Continue anyway</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

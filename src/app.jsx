@@ -1,6 +1,5 @@
 // src/App.jsx
 import React, { useEffect, useState, useRef, useMemo } from 'react';
-// ⬇️ use the shared client (no direct io(...) here)
 import { socket } from './socket';
 import Scanner from './scanner/Scanner.jsx';
 import StartPage from './StartPage.jsx';
@@ -128,6 +127,25 @@ export default function App() {
   // reference to socket (shared)
   const socketRef = useRef(null);
 
+  // ---- DEBUG: show exactly what the client thinks the socket URL/opts are
+  useEffect(() => {
+    try {
+      console.log(
+        "[SOCKET from App] uri:",
+        socket?.io?.uri,
+        "opts:",
+        socket?.io?.opts,
+      );
+      // current transport (if connected) / on engine events:
+      if (socket?.io?.engine) {
+        console.log("[SOCKET engine initial transport]", socket.io.engine.transport.name);
+        socket.io.engine.on("upgrade", (t) =>
+          console.log("[SOCKET engine upgrade]", t.name)
+        );
+      }
+    } catch {}
+  }, []);
+
   // beeps
   const beepRef = useRef(null);
   const ensureBeep = (hz = 1500) => {
@@ -241,8 +259,10 @@ export default function App() {
   useEffect(() => {
     socketRef.current = socket;
 
-    // Ensure connection (in case autoConnect is false or it was previously disconnected)
-    try { socket.connect(); } catch {}
+    // Don’t double-connect
+    if (!socket.connected) {
+      try { socket.connect(); } catch {}
+    }
 
     const onNew = (row) => {
       if (!row) return;
@@ -277,13 +297,32 @@ export default function App() {
       setStatus('All scans cleared (synced)');
     };
 
-    const onConnect = () => setStatus('Live sync connected');
-    const onDisconnect = (reason) => setStatus(`Live sync disconnected (${reason})`);
-    const onConnectError = (err) => setStatus(`Socket error: ${err?.message || err}`);
+    const onConnect = () => {
+      setStatus('Live sync connected');
+      try {
+        console.log("[SOCKET connected] uri:", socket?.io?.uri, "transport:", socket?.io?.engine?.transport?.name);
+      } catch {}
+    };
+    const onDisconnect = (reason) => {
+      setStatus(`Live sync disconnected (${reason})`);
+      console.log("[SOCKET disconnected]", reason);
+    };
+    const onConnectError = (err) => {
+      setStatus(`Socket error: ${err?.message || err}`);
+      console.log("[SOCKET connect_error]", err);
+    };
+
+    // extra visibility
+    const onRecon = (n) => console.log("[SOCKET reconnect_attempt]", n);
+    const onTransport = () => {
+      try { console.log("[SOCKET transport]", socket.io.engine.transport.name); } catch {}
+    };
 
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
     socket.io?.on?.('error', onConnectError);
+    socket.io?.on?.('reconnect_attempt', onRecon);
+    socket.io?.engine?.on?.('transport', onTransport);
 
     socket.on('new-scan', onNew);
     socket.on('deleted-scan', onDeleted);
@@ -294,13 +333,12 @@ export default function App() {
         socket.off('connect', onConnect);
         socket.off('disconnect', onDisconnect);
         socket.io?.off?.('error', onConnectError);
+        socket.io?.off?.('reconnect_attempt', onRecon);
+        socket.io?.engine?.off?.('transport', onTransport);
 
         socket.off('new-scan', onNew);
         socket.off('deleted-scan', onDeleted);
         socket.off('cleared-scans', onCleared);
-
-        // Optional: if App unmounts, you can keep the socket alive.
-        // socket.disconnect();
       } catch {}
       socketRef.current = null;
     };
@@ -442,7 +480,6 @@ export default function App() {
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
       setStatus('Saved to staged');
     } catch (e) {
-      // Offline/failed: queue it to IndexedDB for later
       await idbAdd({ payload: rec });
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
       setTotalCount(c => c + 1);
@@ -489,7 +526,7 @@ export default function App() {
       }
       const dispo = resp.headers.get('Content-Disposition') || '';
       const match = dispo.match(/filename="?([^"]+)"?/i);
-      const filename = match?.[1] || `Master_QR_${Date.now()}.xlsx`;
+      const filename = match?.[1] || `Master_QR_${Date.now().toISOString?.() || Date.now()}.xlsx`;
 
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
@@ -509,7 +546,6 @@ export default function App() {
   };
 
   // ---------- RENDER ----------
-
   if (showStart) {
     return (
       <div style={{ minHeight: '100vh', background: '#fff' }}>

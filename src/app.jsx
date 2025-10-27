@@ -69,7 +69,6 @@ function idbOpen() {
     req.onerror = () => reject(req.error);
   });
 }
-
 async function idbAdd(item) {
   const db = await idbOpen();
   return new Promise((resolve, reject) => {
@@ -79,7 +78,6 @@ async function idbAdd(item) {
     tx.onerror = () => reject(tx.error);
   });
 }
-
 async function idbAll() {
   const db = await idbOpen();
   return new Promise((resolve, reject) => {
@@ -89,7 +87,6 @@ async function idbAll() {
     req.onerror = () => reject(req.error);
   });
 }
-
 async function idbClear(ids) {
   const db = await idbOpen();
   return new Promise((resolve, reject) => {
@@ -104,14 +101,14 @@ async function idbClear(ids) {
 export default function App() {
   const [status, setStatus] = useState('Ready');
   const [scans, setScans] = useState([]);
-  const [showStart, setShowStart] = useState(true);
+  const [showStart, setShowStart] = useState(false); // you said you're not using start page
 
   const [operator, setOperator] = useState('Clerk A');
   const [wagonId1, setWagonId1] = useState('');
   const [wagonId2, setWagonId2] = useState('');
   const [wagonId3, setWagonId3] = useState('');
   const [receivedAt, setReceivedAt] = useState('');
-  const [loadedAt] = useState('WalvisBay'); // static as requested
+  const [loadedAt] = useState('WalvisBay'); // static
 
   const [pending, setPending] = useState(null);
   const [qrExtras, setQrExtras] = useState({ grade: '', railType: '', spec: '', lengthM: '' });
@@ -119,80 +116,52 @@ export default function App() {
   const [dupPrompt, setDupPrompt] = useState(null);
   const [removePrompt, setRemovePrompt] = useState(null);
 
-  // Damaged QR manual entry (now includes detail fields)
-  const [damagedMode, setDamagedMode] = useState(false);
+  // Manual entry (Damaged QR)
   const [manualSerial, setManualSerial] = useState('');
-  const [manualRailType, setManualRailType] = useState('');
   const [manualGrade, setManualGrade] = useState('');
+  const [manualRailType, setManualRailType] = useState('');
   const [manualSpec, setManualSpec] = useState('');
-  const [manualLengthM, setManualLengthM] = useState('');
+  const [manualLength, setManualLength] = useState('');
 
   // pagination + total count
   const [totalCount, setTotalCount] = useState(0);
   const [nextCursor, setNextCursor] = useState(null);
   const PAGE_SIZE = 200;
 
-  // socket ref
+  // Socket ref
   const socketRef = useRef(null);
 
-  // Scanner restart key
-  const [scanKey, setScanKey] = useState(0);
+  // ----- Audio (beep only on successful QR scan) -----
+  const beepRef = useRef(null);
+  const audioUnlockedRef = useRef(false);
 
-  // ---- SOUND via Web Audio API (more reliable than <audio>)
-  const audioCtxRef = useRef(null);
-  const audioPrimedRef = useRef(false);
-
-  function primeAudio() {
+  const ensureBeep = (hz = 1500) => {
     try {
-      if (!audioCtxRef.current) {
-        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      if (!beepRef.current) {
+        // short click-like wav
+        const dataUri = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYBAGZkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZAA=';
+        const audio = new Audio();
+        audio.src = dataUri;
+        audio.preload = 'auto';
+        beepRef.current = audio;
       }
-      if (audioCtxRef.current?.state === 'suspended') {
-        audioCtxRef.current.resume().catch(() => {});
-      }
-      audioPrimedRef.current = true;
+      // Playback rate nudged by freq
+      beepRef.current.playbackRate = Math.max(0.75, Math.min(2, hz / 1500));
+      beepRef.current.currentTime = 0;
+      const p = beepRef.current.play();
+      if (p && typeof p.then === 'function') p.catch(() => {});
     } catch {}
-  }
+  };
 
-  // Prime on first user gesture anywhere
-  useEffect(() => {
-    const primeOnce = () => {
-      if (audioPrimedRef.current) return;
-      primeAudio();
-      window.removeEventListener('pointerdown', primeOnce, true);
-      window.removeEventListener('keydown', primeOnce, true);
-      window.removeEventListener('touchstart', primeOnce, true);
-    };
-    window.addEventListener('pointerdown', primeOnce, true);
-    window.addEventListener('keydown', primeOnce, true);
-    window.addEventListener('touchstart', primeOnce, true);
-    return () => {
-      window.removeEventListener('pointerdown', primeOnce, true);
-      window.removeEventListener('keydown', primeOnce, true);
-      window.removeEventListener('touchstart', primeOnce, true);
-    };
-  }, []);
-
-  function playBeep() {
+  const unlockAudio = () => {
+    if (audioUnlockedRef.current) return;
     try {
-      if (!audioCtxRef.current) return;
-      const ctx = audioCtxRef.current;
-      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.type = 'sine';
-      o.frequency.setValueAtTime(1500, ctx.currentTime);
-      g.gain.setValueAtTime(0.0001, ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + 0.01); // fade in
-      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.14); // fade out
-      o.connect(g);
-      g.connect(ctx.destination);
-      o.start();
-      o.stop(ctx.currentTime + 0.15);
+      ensureBeep(1200); // attempt on gesture
+      audioUnlockedRef.current = true;
     } catch {}
-  }
+  };
 
-  // ---- initial load
+  // initial load: total count + first page
   useEffect(() => {
     (async () => {
       try {
@@ -203,6 +172,7 @@ export default function App() {
         const countData = await countResp.json().catch(()=>({count:0}));
         const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
 
+        // normalize keys
         const normalized = (pageData.rows || []).map((r) => ({
           ...r,
           wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
@@ -239,7 +209,7 @@ export default function App() {
     setNextCursor(data.nextCursor ?? null);
   };
 
-  // ---- Auto-sync offline queue when online
+  // Auto-sync offline queue when online
   useEffect(() => {
     async function flushQueue() {
       try {
@@ -254,6 +224,7 @@ export default function App() {
         if (resp.ok) {
           await idbClear(items.map(x => x.id));
           setTotalCount(c => c + payload.length);
+          // pull fresh page
           try {
             const pageResp = await fetch(api(`/staged?limit=${PAGE_SIZE}`));
             const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
@@ -280,7 +251,7 @@ export default function App() {
     return () => window.removeEventListener('online', flushQueue);
   }, []);
 
-  // ---- Live sync via shared Socket.IO client
+  // Live sync via shared Socket.IO client
   useEffect(() => {
     socketRef.current = socket;
     try { socket.connect(); } catch {}
@@ -312,9 +283,7 @@ export default function App() {
     };
 
     const onCleared = () => {
-      setScans([]);
-      setTotalCount(0);
-      setNextCursor(null);
+      setScans([]); setTotalCount(0); setNextCursor(null);
       setStatus('All scans cleared (synced)');
     };
 
@@ -335,7 +304,6 @@ export default function App() {
         socket.off('connect', onConnect);
         socket.off('disconnect', onDisconnect);
         socket.io?.off?.('error', onConnectError);
-
         socket.off('new-scan', onNew);
         socket.off('deleted-scan', onDeleted);
         socket.off('cleared-scans', onCleared);
@@ -344,6 +312,7 @@ export default function App() {
     };
   }, []);
 
+  // Fast membership helper
   const scanSerialSet = useMemo(() => {
     const s = new Set();
     for (const r of scans) if (r?.serial) s.add(String(r.serial).trim().toUpperCase());
@@ -356,44 +325,44 @@ export default function App() {
     return scans.filter((r) => String(r.serial || '').trim().toUpperCase() === key);
   };
 
-  // ---- Scanner callback: only beep on successful, non-duplicate scan
+  // ---- QR SCAN HANDLER (beep only here) ----
   const onDetected = (rawText) => {
     const parsed = parseQrPayload(rawText);
-    const serial = (parsed.serial || rawText || '').trim();
+    const serial = parsed.serial || rawText;
 
-    if (!serial) {
-      setStatus('Scan unreadable. Use "Damaged QR" for manual entry.');
-      return;
+    if (serial) {
+      const matches = findDuplicates(serial);
+      if (matches.length > 0) {
+        // Duplicate always shows prompt
+        setDupPrompt({
+          serial: String(serial).toUpperCase(),
+          matches,
+          candidate: {
+            pending: {
+              serial: String(serial).toUpperCase(),
+              raw: parsed.raw || String(rawText),
+              capturedAt: new Date().toISOString(),
+            },
+            qrExtras: {
+              grade: parsed.grade || '',
+              railType: parsed.railType || '',
+              spec: parsed.spec || '',
+              lengthM: parsed.lengthM || '',
+            },
+          },
+        });
+        setStatus('Duplicate detected — awaiting decision');
+        // successful scan still happened -> beep
+        ensureBeep(1500);
+        return;
+      }
     }
 
-    const matches = findDuplicates(serial);
-    if (matches.length > 0) {
-      setDupPrompt({
-        serial: String(serial).toUpperCase(),
-        matches,
-        candidate: {
-          pending: {
-            serial: String(serial).toUpperCase(),
-            raw: parsed.raw || String(rawText),
-            capturedAt: new Date().toISOString(),
-          },
-          qrExtras: {
-            grade: parsed.grade || '',
-            railType: parsed.railType || '',
-            spec: parsed.spec || '',
-            lengthM: parsed.lengthM || '',
-          },
-        },
-      });
-      setStatus('Duplicate detected — awaiting decision');
-      return; // no beep on duplicate
-    }
-
-    // ✅ successful scan → beep
-    if (audioPrimedRef.current) playBeep();
+    // Successful new scan -> beep
+    ensureBeep(1500);
 
     setPending({
-      serial,
+      serial: parsed.serial || rawText,
       raw: parsed.raw || String(rawText),
       capturedAt: new Date().toISOString(),
     });
@@ -403,13 +372,11 @@ export default function App() {
       spec: parsed.spec || '',
       lengthM: parsed.lengthM || '',
     });
-    setDamagedMode(false);
-    setManualSerial('');
-    setManualRailType('');
-    setManualGrade('');
-    setManualSpec('');
-    setManualLengthM('');
     setStatus('Captured — review & Confirm');
+  };
+
+  const onUserInteract = () => {
+    unlockAudio(); // called by Scanner when Start Scanner is tapped
   };
 
   const handleDupDiscard = () => {
@@ -420,7 +387,6 @@ export default function App() {
   };
   const handleDupContinue = () => {
     if (!dupPrompt) return;
-    // no beep on duplicate path
     setPending(dupPrompt.candidate.pending);
     setQrExtras(dupPrompt.candidate.qrExtras);
     setDupPrompt(null);
@@ -432,10 +398,7 @@ export default function App() {
     if (!removePrompt) return;
     try {
       const resp = await fetch(api(`/staged/${removePrompt}`), { method: 'DELETE' });
-      if (!resp.ok) {
-        const errText = await resp.text().catch(() => '');
-        throw new Error(errText || 'Failed to remove scan');
-      }
+      if (!resp.ok) throw new Error(await resp.text().catch(() => 'Failed to remove scan'));
       setScans((prev) => prev.filter((scan) => scan.id !== removePrompt));
       setTotalCount(c => Math.max(0, c - 1));
       setRemovePrompt(null);
@@ -449,10 +412,8 @@ export default function App() {
   const discardRemovePrompt = () => setRemovePrompt(null);
 
   const confirmPending = async () => {
-    // Only allow saving if we have a scanned pending record.
     if (!pending?.serial || !String(pending.serial).trim()) {
-      setStatus('Unable to save: no scanned QR. Use "Damaged QR" to save a manual entry.');
-      alert('Unable to save without a scan.\nIf the QR is damaged, use the "Damaged QR" button.');
+      alert('Nothing to save yet. Scan a QR first. If it is damaged, use “Save Damaged QR”.');
       return;
     }
 
@@ -479,10 +440,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rec),
       });
-
-      let data = null;
-      try { data = await resp.json(); } catch {}
-
+      const data = await resp.json().catch(()=>null);
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
       const newId = data?.id || Date.now();
@@ -493,6 +451,7 @@ export default function App() {
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
       setStatus('Saved to staged');
     } catch (e) {
+      // Offline/failed: queue to IndexedDB for later
       await idbAdd({ payload: rec });
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
       setTotalCount(c => c + 1);
@@ -502,40 +461,15 @@ export default function App() {
     }
   };
 
-  // ---- Damaged QR: manual save path (now with details)
+  // Save Damaged QR (manual)
   const saveDamaged = async () => {
-    const serial = String(manualSerial || '').trim();
-    if (!serial) {
-      alert('Enter a serial first.');
-      return;
-    }
-
-    // duplicate check for manual entry as well
-    const matches = findDuplicates(serial);
-    if (matches.length > 0) {
-      setDupPrompt({
-        serial: String(serial).toUpperCase(),
-        matches,
-        candidate: {
-          pending: {
-            serial: String(serial).toUpperCase(),
-            raw: serial,
-            capturedAt: new Date().toISOString(),
-          },
-          qrExtras: {
-            grade: manualGrade || '',
-            railType: manualRailType || '',
-            spec: manualSpec || '',
-            lengthM: manualLengthM || '',
-          },
-        },
-      });
-      setStatus('Duplicate detected — awaiting decision');
+    if (!manualSerial.trim()) {
+      alert('Unable to save: enter Serial or scan a QR.');
       return;
     }
 
     const rec = {
-      serial,
+      serial: manualSerial.trim(),
       stage: 'received',
       operator,
       wagon1Id: wagonId1,
@@ -544,12 +478,18 @@ export default function App() {
       receivedAt,
       loadedAt,
       timestamp: new Date().toISOString(),
-      grade: manualGrade || '',
-      railType: manualRailType || '',
-      spec: manualSpec || '',
-      lengthM: manualLengthM || '',
-      qrRaw: serial,
+      grade: manualGrade.trim(),
+      railType: manualRailType.trim(),
+      spec: manualSpec.trim(),
+      lengthM: manualLength.trim(),
+      qrRaw: manualSerial.trim(), // fallback
     };
+
+    // If duplicate, warn (but allow save)
+    const matches = findDuplicates(rec.serial);
+    if (matches.length > 0 && !confirm(`Duplicate found (${matches.length}) — Save anyway?`)) {
+      return;
+    }
 
     try {
       const resp = await fetch(api('/scan'), {
@@ -557,110 +497,34 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rec),
       });
-      let data = null;
-      try { data = await resp.json(); } catch {}
-
+      const data = await resp.json().catch(()=>null);
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
       const newId = data?.id || Date.now();
       setScans((prev) => [{ id: newId, ...rec }, ...prev]);
-      setTotalCount(c => c + 1);
+      setTotalCount((c) => c + 1);
 
-      setDamagedMode(false);
+      // clear manual fields
       setManualSerial('');
-      setManualRailType('');
       setManualGrade('');
+      setManualRailType('');
       setManualSpec('');
-      setManualLengthM('');
-      setStatus('Damaged QR saved to staged');
+      setManualLength('');
+      setStatus('Damaged QR saved');
     } catch (e) {
       await idbAdd({ payload: rec });
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
-      setTotalCount(c => c + 1);
-
-      setDamagedMode(false);
+      setTotalCount((c) => c + 1);
       setManualSerial('');
-      setManualRailType('');
       setManualGrade('');
+      setManualRailType('');
       setManualSpec('');
-      setManualLengthM('');
+      setManualLength('');
       setStatus('Damaged QR saved locally (offline) — will sync');
     }
   };
 
-  const exportToExcel = async () => {
-    try {
-      const resp = await fetch(api('/export-to-excel'), { method: 'POST' });
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => '');
-        throw new Error(text || `HTTP ${resp.status}`);
-      }
-      const dispo = resp.headers.get('Content-Disposition') || '';
-      const match = dispo.match(/filename="?([^"]+)"?/i);
-      const filename = match?.[1] || `Master_${Date.now()}.xlsm`;
-
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      setStatus(`Exported ${filename}`);
-    } catch (e) {
-      console.error('Export failed:', e);
-      alert(`Export failed: ${e.message}\n(Ensure uploads/template.xlsm exists on the server)`);
-      setStatus('Export failed');
-    }
-  };
-
-  const exportXlsxWithImages = async () => {
-    try {
-      const resp = await fetch(api('/export-xlsx-images'), { method: 'POST' });
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => '');
-        throw new Error(text || `HTTP ${resp.status}`);
-      }
-      const dispo = resp.headers.get('Content-Disposition') || '';
-      const match = dispo.match(/filename="?([^"]+)"?/i);
-      const filename = match?.[1] || `Master_QR_${Date.now()}.xlsx`;
-
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      setStatus(`Exported ${filename}`);
-    } catch (e) {
-      console.error('Export (images) failed:', e);
-      alert(`Export (images) failed: ${e.message}`);
-      setStatus('Export (images) failed');
-    }
-  };
-
   // ---------- RENDER ----------
-
-  if (showStart) {
-    return (
-      <div style={{ minHeight: '100vh', background: '#fff' }}>
-        <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
-          <StartPage
-            onContinue={() => setShowStart(false)}
-            onExport={exportToExcel}
-            operator={operator}
-            setOperator={setOperator}
-          />
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="container" style={{ paddingTop: 20, paddingBottom: 20 }}>
       <header className="app-header">
@@ -672,30 +536,14 @@ export default function App() {
               <div className="status">{status}</div>
             </div>
           </div>
-          <button className="btn btn-outline" onClick={() => setShowStart(true)}>Back to Start</button>
         </div>
       </header>
 
       <div className="grid" style={{ marginTop: 20 }}>
         {/* Scanner */}
         <section className="card">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <h3 style={{ margin: 0 }}>Scanner</h3>
-            <button
-              className="btn btn-outline"
-              onClick={() => {
-                setScanKey(k => k + 1);
-                setStatus('Restarted camera');
-              }}
-              title="Force reload camera stream"
-            >
-              Restart Scanner
-            </button>
-          </div>
-
-          {/* Pass primeAudio so the Start button counts as a gesture for audio */}
-          <Scanner key={scanKey} onDetected={onDetected} onUserInteract={primeAudio} />
-
+          <h3>Scanner</h3>
+          <Scanner onDetected={onDetected} onUserInteract={onUserInteract} />
           {pending && (
             <div className="notice" style={{ marginTop: 10 }}>
               <div><strong>Pending Serial:</strong> {pending.serial}</div>
@@ -704,79 +552,12 @@ export default function App() {
           )}
         </section>
 
-        {/* Controls */}
+        {/* Controls + Manual Entry */}
         <section className="card">
-          <h3>Controls</h3>
+          <h3>Controls & Manual (Damaged QR)</h3>
 
-          {/* Damaged QR manual entry */}
-          <div className="notice" style={{ marginBottom: 10 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <button
-                className={`btn ${damagedMode ? '' : 'btn-outline'}`}
-                onClick={() => {
-                  setDamagedMode((v) => !v);
-                  setManualSerial('');
-                  setManualRailType('');
-                  setManualGrade('');
-                  setManualSpec('');
-                  setManualLengthM('');
-                }}
-              >
-                {damagedMode ? 'Damaged QR (ON)' : 'Damaged QR'}
-              </button>
-
-              {damagedMode && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  <input
-                    className="input"
-                    placeholder="Serial"
-                    value={manualSerial}
-                    onChange={(e) => setManualSerial(e.target.value)}
-                    style={{ minWidth: 160 }}
-                  />
-                  <input
-                    className="input"
-                    placeholder="Rail Type (e.g., R260LHT)"
-                    value={manualRailType}
-                    onChange={(e) => setManualRailType(e.target.value)}
-                    style={{ minWidth: 160 }}
-                  />
-                  <input
-                    className="input"
-                    placeholder="Grade (e.g., SAR60)"
-                    value={manualGrade}
-                    onChange={(e) => setManualGrade(e.target.value)}
-                    style={{ minWidth: 140 }}
-                  />
-                  <input
-                    className="input"
-                    placeholder="Spec (e.g., UIC 60)"
-                    value={manualSpec}
-                    onChange={(e) => setManualSpec(e.target.value)}
-                    style={{ minWidth: 160 }}
-                  />
-                  <input
-                    className="input"
-                    placeholder="Length (e.g., 18m)"
-                    value={manualLengthM}
-                    onChange={(e) => setManualLengthM(e.target.value)}
-                    style={{ minWidth: 120 }}
-                  />
-                  <button className="btn" onClick={saveDamaged}>Save Damaged QR</button>
-                </div>
-              )}
-            </div>
-            {!damagedMode && (
-              <div className="meta" style={{ marginTop: 6 }}>
-                To save without scanning, turn on <strong>Damaged QR</strong>, fill details, then click <em>Save Damaged QR</em>.
-              </div>
-            )}
-          </div>
-
-          <div
-            className="controls-grid"
-            style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}
-          >
+          {/* Operator / Wagon / Locations */}
+          <div className="controls-grid" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
             <div>
               <label className="status">Operator</label>
               <input className="input" value={operator} onChange={(e) => setOperator(e.target.value)} />
@@ -822,20 +603,45 @@ export default function App() {
             </div>
           </div>
 
+          {/* Actions (QR path) */}
           <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn" onClick={confirmPending} disabled={!pending}>Confirm & Save</button>
             <button
               className="btn btn-outline"
-              onClick={() => {
-                setPending(null);
-                setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
-                setStatus('Ready');
-              }}
+              onClick={() => { setPending(null); setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' }); setStatus('Ready'); }}
             >
               Discard
             </button>
-            <button className="btn" onClick={exportToExcel}>Export to Excel</button>
-            <button className="btn" onClick={exportXlsxWithImages}>Export XLSX (with QR images)</button>
+          </div>
+
+          <hr style={{ margin: '16px 0', borderColor: 'var(--border)' }} />
+
+          {/* Manual Entry for Damaged QR */}
+          <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+            <div>
+              <label className="status">Serial (Damaged QR)</label>
+              <input className="input" value={manualSerial} onChange={(e) => setManualSerial(e.target.value)} placeholder="Enter serial manually" />
+            </div>
+            <div>
+              <label className="status">Rail Type</label>
+              <input className="input" value={manualRailType} onChange={(e) => setManualRailType(e.target.value)} placeholder="e.g. R260HT" />
+            </div>
+            <div>
+              <label className="status">Grade</label>
+              <input className="input" value={manualGrade} onChange={(e) => setManualGrade(e.target.value)} placeholder="e.g. SAR50" />
+            </div>
+            <div>
+              <label className="status">Spec</label>
+              <input className="input" value={manualSpec} onChange={(e) => setManualSpec(e.target.value)} placeholder="e.g. AREMA 2020" />
+            </div>
+            <div>
+              <label className="status">Length</label>
+              <input className="input" value={manualLength} onChange={(e) => setManualLength(e.target.value)} placeholder="e.g. 12m" />
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <button className="btn" onClick={saveDamaged}>Save Damaged QR</button>
           </div>
         </section>
 
@@ -888,17 +694,14 @@ export default function App() {
 
       {/* Remove confirmation */}
       {removePrompt && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}
-        >
+        <div role="dialog" aria-modal="true"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}>
           <div className="card" style={{ maxWidth: 520, width: '100%', border: '1px solid var(--border)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}>
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
               <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(220,38,38,.1)', color: 'rgb(220,38,38)', fontSize: 22 }}>⚠️</div>
               <div style={{ flex: 1 }}>
                 <h3 style={{ margin: 0 }}>Are you sure?</h3>
-                <div className="status" style={{ marginTop: 6 }}>Are you sure you want to remove this staged scan from the list?</div>
+                <div className="status" style={{ marginTop: 6 }}>Remove this staged scan?</div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
                   <button className="btn btn-outline" onClick={discardRemovePrompt}>Cancel</button>
                   <button className="btn" onClick={confirmRemoveScan}>Confirm</button>
@@ -911,11 +714,8 @@ export default function App() {
 
       {/* Duplicate modal */}
       {dupPrompt && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}
-        >
+        <div role="dialog" aria-modal="true"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}>
           <div className="card" style={{ maxWidth: 560, width: '100%', border: '1px solid var(--border)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}>
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
               <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(251,191,36,.15)', color: 'rgb(202,138,4)', fontSize: 22 }}>⚠️</div>

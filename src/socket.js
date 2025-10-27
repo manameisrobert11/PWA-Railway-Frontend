@@ -1,11 +1,12 @@
-// src/lib/socket.js
+// Frontend/src/socket.js
 import { io } from "socket.io-client";
 
-// Use .env in dev/prod, hard-code as fallback
-const WS_URL = import.meta.env.VITE_WS_URL || "https://backend-test-d939.onrender.com";
+// Hardcode as fallback so builds work even if env var is missing
+const URL = import.meta.env.VITE_SOCKET_URL || "https://backend-test-d939.onrender.com";
 
-export const socket = io(WS_URL, {
+export const socket = io(URL, {
   path: "/socket.io",
   transports: ["websocket", "polling"],
   withCredentials: true,
+  // autoConnect: true, // default
 });

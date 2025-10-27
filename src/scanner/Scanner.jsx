@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { BarcodeFormat, DecodeHintType } from '@zxing/library';
 
-export default function Scanner({ onDetected, fps = 10 }) {
+export default function Scanner({ onDetected, onUserInteract, fps = 10 }) {
   const videoRef = useRef(null);
   const [active, setActive] = useState(false);
   const [status, setStatus] = useState('Idle');
@@ -12,7 +12,12 @@ export default function Scanner({ onDetected, fps = 10 }) {
   const streamRef = useRef(null);
   const mounted = useRef(false);
 
-  // Camera controls (capability-driven)
+  // Last decode for throttling duplicates
+  const lastTextRef = useRef('');
+  const lastAtRef = useRef(0);
+  const THROTTLE_MS = 1250;
+
+  // Camera controls
   const [hasTorch, setHasTorch] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
 
@@ -45,7 +50,6 @@ export default function Scanner({ onDetected, fps = 10 }) {
     } catch {}
   };
 
-  // Build ZXing hints for better tolerance / speed
   const buildHints = () => {
     try {
       const hints = new Map();
@@ -60,7 +64,6 @@ export default function Scanner({ onDetected, fps = 10 }) {
   useEffect(() => {
     mounted.current = true;
     readerRef.current = new BrowserMultiFormatReader(buildHints());
-
     return () => {
       mounted.current = false;
       safeResetReader();
@@ -69,7 +72,6 @@ export default function Scanner({ onDetected, fps = 10 }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Try to choose the "best" rear camera
   async function pickRearDeviceId() {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
@@ -87,14 +89,12 @@ export default function Scanner({ onDetected, fps = 10 }) {
     }
   }
 
-  // Apply advanced constraints if supported
   async function applyTrackEnhancements(track) {
     if (!track?.applyConstraints) return;
 
     const caps = track.getCapabilities?.() || {};
     const settings = track.getSettings?.() || {};
 
-    // Best-effort continuous auto modes
     try {
       await track.applyConstraints({
         advanced: [
@@ -108,9 +108,7 @@ export default function Scanner({ onDetected, fps = 10 }) {
     // Torch
     if (typeof caps.torch === 'boolean') {
       setHasTorch(true);
-      try {
-        await track.applyConstraints({ advanced: [{ torch: false }] });
-      } catch {}
+      try { await track.applyConstraints({ advanced: [{ torch: false }] }); } catch {}
     } else {
       setHasTorch(false);
     }
@@ -126,9 +124,7 @@ export default function Scanner({ onDetected, fps = 10 }) {
 
       const initialZoom = Math.min(max, Math.max(min, (settings.zoom || min) * 1.5));
       setZoom(initialZoom);
-      try {
-        await track.applyConstraints({ advanced: [{ zoom: initialZoom }] });
-      } catch {}
+      try { await track.applyConstraints({ advanced: [{ zoom: initialZoom }] }); } catch {}
     } else {
       setHasZoom(false);
     }
@@ -148,6 +144,9 @@ export default function Scanner({ onDetected, fps = 10 }) {
   }
 
   const startScanner = async () => {
+    // Let the app prime audio on this user gesture
+    try { onUserInteract && onUserInteract(); } catch {}
+
     if (!navigator.mediaDevices?.getUserMedia) {
       alert('Camera API not supported');
       return;
@@ -156,12 +155,11 @@ export default function Scanner({ onDetected, fps = 10 }) {
     setStatus('Starting camera...');
     try {
       const deviceId = await pickRearDeviceId();
-
       const constraints = {
         video: {
           deviceId: deviceId ? { exact: deviceId } : undefined,
           facingMode: deviceId ? undefined : { ideal: 'environment' },
-          width: { ideal: 1920 },  // high resolution for distance decoding
+          width: { ideal: 1920 },
           height: { ideal: 1080 },
           aspectRatio: { ideal: 16 / 9 },
           frameRate: { ideal: Math.min(30, Math.max(10, fps * 2)) },
@@ -192,9 +190,19 @@ export default function Scanner({ onDetected, fps = 10 }) {
         if (!mounted.current) return;
         if (result) {
           const text = result.getText ? result.getText() : result.text;
-          if (text && onDetected) onDetected(text);
+          if (text) {
+            // Throttle duplicate triggers of same payload in quick succession
+            const now = Date.now();
+            if (text === lastTextRef.current && now - lastAtRef.current < THROTTLE_MS) {
+              return;
+            }
+            lastTextRef.current = text;
+            lastAtRef.current = now;
+
+            try { onDetected && onDetected(text); } catch {}
+          }
         }
-        // Ignore errors; ZXing continues scanning.
+        // ignore errors to keep scanning
       });
     } catch (err) {
       console.error('Camera access error:', err);
@@ -210,7 +218,6 @@ export default function Scanner({ onDetected, fps = 10 }) {
     stopStream();
   };
 
-  // Torch toggle
   const toggleTorch = async () => {
     try {
       const track = streamRef.current?.getVideoTracks?.()[0];
@@ -223,7 +230,6 @@ export default function Scanner({ onDetected, fps = 10 }) {
     }
   };
 
-  // Zoom change
   const onZoomChange = async (v) => {
     const val = parseFloat(v);
     setZoom(val);
@@ -236,7 +242,6 @@ export default function Scanner({ onDetected, fps = 10 }) {
     }
   };
 
-  // Exposure compensation change
   const onExposureChange = async (v) => {
     const val = parseFloat(v);
     setExposure(val);
@@ -249,7 +254,6 @@ export default function Scanner({ onDetected, fps = 10 }) {
     }
   };
 
-  // Tap to (re)focus hint: re-apply continuous focus constraints
   const onVideoClick = async () => {
     try {
       const track = streamRef.current?.getVideoTracks?.()[0];
@@ -271,7 +275,7 @@ export default function Scanner({ onDetected, fps = 10 }) {
         onClick={onVideoClick}
       />
 
-      {/* Camera controls (only render if capability exists) */}
+      {/* Camera controls */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
         {hasTorch && (
           <button className="btn btn-outline" onClick={toggleTorch}>
@@ -312,7 +316,14 @@ export default function Scanner({ onDetected, fps = 10 }) {
 
       <div style={{ display: 'flex', gap: 8 }}>
         {!active ? (
-          <button className="btn" onClick={startScanner}>Start Scanner</button>
+          <button
+            className="btn"
+            onClick={startScanner}
+            onPointerDown={onUserInteract}
+            onKeyDown={onUserInteract}
+          >
+            Start Scanner
+          </button>
         ) : (
           <button className="btn btn-outline" onClick={stopScanner}>Stop Scanner</button>
         )}

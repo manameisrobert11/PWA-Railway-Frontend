@@ -637,8 +637,38 @@ export default function App() {
       <div className="grid" style={{ marginTop: 20 }}>
         {/* Scanner */}
         <section className="card">
-          <h3>Scanner</h3>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <h3 style={{ margin: 0 }}>Scanner</h3>
+
+            {!damagedMode ? (
+              <button className="btn btn-outline" onClick={enableDamaged}>Damaged QR</button>
+            ) : (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <button className="btn" disabled>Damaged QR Mode</button>
+                <button className="btn btn-outline" onClick={cancelDamaged}>Cancel</button>
+              </div>
+            )}
+          </div>
+
           <Scanner onDetected={onDetected} />
+
+          {/* Manual input in Scanner card when Damaged mode */}
+          {damagedMode && (
+            <div style={{ marginTop: 10 }}>
+              <label className="status">Manual Serial (QR damaged)</label>
+              <input
+                className="input"
+                value={manualSerial}
+                onChange={(e) => setManualSerial(e.target.value)}
+                placeholder="Enter serial code exactly"
+                autoFocus
+              />
+              <div className="status" style={{ marginTop: 6 }}>
+                After typing the serial, click <strong>Confirm &amp; Save (Damaged QR)</strong>.
+              </div>
+            </div>
+          )}
+
           {pending && (
             <div className="notice" style={{ marginTop: 10 }}>
               <div><strong>Pending Serial:</strong> {pending.serial}</div>
@@ -650,33 +680,6 @@ export default function App() {
         {/* Controls */}
         <section className="card">
           <h3>Controls</h3>
-
-          {/* Damaged QR controls */}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-            {!damagedMode ? (
-              <button className="btn btn-outline" onClick={enableDamaged}>Damaged QR</button>
-            ) : (
-              <>
-                <button className="btn" disabled>Damaged QR Mode</button>
-                <button className="btn btn-outline" onClick={cancelDamaged}>Cancel</button>
-              </>
-            )}
-          </div>
-
-          {/* Manual serial input (only in damaged mode) */}
-          {damagedMode && (
-            <div style={{ marginBottom: 12 }}>
-              <label className="status">Manual Serial (QR damaged)</label>
-              <input
-                className="input"
-                value={manualSerial}
-                onChange={(e) => setManualSerial(e.target.value)}
-                placeholder="Enter serial code exactly"
-                autoFocus
-              />
-            </div>
-          )}
-
           <div className="controls-grid" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
             <div>
               <label className="status">Operator</label>

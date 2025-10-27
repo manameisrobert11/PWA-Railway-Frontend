@@ -2,29 +2,25 @@
   command = "npm install && npm run build"
   publish = "dist"
 
-# Keep Node consistent
 [build.environment]
   NODE_VERSION = "20"
-  # 👇 This is the important part for your Socket.IO client
-  VITE_SOCKET_URL = "https://backend-test-d939.onrender.com"
-  # If you ever want your REST calls to skip the /api proxy and hit Render directly:
-  # VITE_API_BASE = "https://backend-test-d939.onrender.com"
+  VITE_SOCKET_URL = "https://backend-test-d939.onrender.com" # keep this too
+  # VITE_API_BASE  = "https://backend-test-d939.onrender.com" # optional
 
-# Proxy REST API to Render (your frontend can call /api/*)
+# Proxy REST
 [[redirects]]
   from = "/api/*"
   to = "https://backend-test-d939.onrender.com/api/:splat"
   status = 200
   force = true
 
-# (Optional) If you ever switch the client to use a relative socket URL (io("/")),
-# uncomment this block to proxy WebSocket + polling to Render as well.
-# [[redirects]]
-#   from = "/socket.io/*"
-#   to = "https://backend-test-d939.onrender.com/socket.io/:splat"
-#   status = 200
-#   force = true
-#   headers = { Connection = "upgrade" }
+# ✅ Proxy Socket.IO (websocket + polling)
+[[redirects]]
+  from = "/socket.io/*"
+  to = "https://backend-test-d939.onrender.com/socket.io/:splat"
+  status = 200
+  force = true
+  headers = { Connection = "upgrade" }
 
 # SPA fallback
 [[redirects]]

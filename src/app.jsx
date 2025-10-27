@@ -1,6 +1,7 @@
 // src/App.jsx
 import React, { useEffect, useState, useRef, useMemo } from 'react';
-import { io } from 'socket.io-client';
+// ⬇️ use the shared client (no direct io(...) here)
+import { socket } from './socket';
 import Scanner from './scanner/Scanner.jsx';
 import StartPage from './StartPage.jsx';
 import './app.css';
@@ -124,7 +125,7 @@ export default function App() {
   const [nextCursor, setNextCursor] = useState(null);
   const PAGE_SIZE = 200;
 
-  // Socket
+  // reference to socket (shared)
   const socketRef = useRef(null);
 
   // beeps
@@ -236,36 +237,27 @@ export default function App() {
     return () => window.removeEventListener('online', flushQueue);
   }, []);
 
-  // Live sync via Socket.IO
+  // Live sync via shared Socket.IO client
   useEffect(() => {
-    // Derive socket origin
-    const socketOrigin =
-      import.meta.env.VITE_SOCKET_URL
-      || (API_BASE
-            ? (() => {
-                try { return new URL(API_BASE, window.location.href).origin; } catch { return window.location.origin; }
-              })()
-            : window.location.origin);
-
-    const socket = io(socketOrigin, {
-      transports: ['websocket', 'polling'],
-      path: '/socket.io',
-      withCredentials: false,
-    });
     socketRef.current = socket;
 
-    socket.on('new-scan', (row) => {
+    // Ensure connection (in case autoConnect is false or it was previously disconnected)
+    try { socket.connect(); } catch {}
+
+    const onNew = (row) => {
       if (!row) return;
       setScans((prev) => {
         const hasId = row.id != null && prev.some((x) => String(x.id) === String(row.id));
-        const hasSerial = row.serial && prev.some((x) => String(x.serial).trim().toUpperCase() === String(row.serial).trim().toUpperCase());
+        const hasSerial = row.serial && prev.some((x) =>
+          String(x.serial).trim().toUpperCase() === String(row.serial).trim().toUpperCase()
+        );
         if (hasId || hasSerial) return prev;
         return [{ ...row }, ...prev];
       });
       setTotalCount((c) => c + 1);
-    });
+    };
 
-    socket.on('deleted-scan', ({ id }) => {
+    const onDeleted = ({ id }) => {
       if (id == null) return;
       setScans((prev) => {
         const before = prev.length;
@@ -276,21 +268,39 @@ export default function App() {
         }
         return next;
       });
-    });
+    };
 
-    socket.on('cleared-scans', () => {
+    const onCleared = () => {
       setScans([]);
       setTotalCount(0);
       setNextCursor(null);
       setStatus('All scans cleared (synced)');
-    });
+    };
+
+    const onConnect = () => setStatus('Live sync connected');
+    const onDisconnect = (reason) => setStatus(`Live sync disconnected (${reason})`);
+    const onConnectError = (err) => setStatus(`Socket error: ${err?.message || err}`);
+
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.io?.on?.('error', onConnectError);
+
+    socket.on('new-scan', onNew);
+    socket.on('deleted-scan', onDeleted);
+    socket.on('cleared-scans', onCleared);
 
     return () => {
       try {
-        socket.off('new-scan');
-        socket.off('deleted-scan');
-        socket.off('cleared-scans');
-        socket.disconnect();
+        socket.off('connect', onConnect);
+        socket.off('disconnect', onDisconnect);
+        socket.io?.off?.('error', onConnectError);
+
+        socket.off('new-scan', onNew);
+        socket.off('deleted-scan', onDeleted);
+        socket.off('cleared-scans', onCleared);
+
+        // Optional: if App unmounts, you can keep the socket alive.
+        // socket.disconnect();
       } catch {}
       socketRef.current = null;
     };
@@ -381,7 +391,6 @@ export default function App() {
       setTotalCount(c => Math.max(0, c - 1));
       setRemovePrompt(null);
       setStatus('Scan removed successfully');
-      // No need to do anything else: other clients will receive 'deleted-scan' via socket
     } catch (e) {
       console.error(e);
       alert(e.message || 'Failed to remove scan');
@@ -410,7 +419,7 @@ export default function App() {
       railType: qrExtras.railType,
       spec: qrExtras.spec,
       lengthM: qrExtras.lengthM,
-      qrRaw: pending.raw || String(pending.serial), // save QR text (also used for images export)
+      qrRaw: pending.raw || String(pending.serial),
     };
 
     try {
@@ -432,7 +441,6 @@ export default function App() {
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
       setStatus('Saved to staged');
-      // Other clients will get 'new-scan' via socket; this client already added it locally
     } catch (e) {
       // Offline/failed: queue it to IndexedDB for later
       await idbAdd({ payload: rec });
@@ -704,4 +712,3 @@ export default function App() {
     </div>
   );
 }
-

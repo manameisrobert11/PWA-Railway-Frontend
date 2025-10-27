@@ -101,14 +101,14 @@ async function idbClear(ids) {
 export default function App() {
   const [status, setStatus] = useState('Ready');
   const [scans, setScans] = useState([]);
-  const [showStart, setShowStart] = useState(false); // you said you're not using start page
+  const [showStart, setShowStart] = useState(true);
 
   const [operator, setOperator] = useState('Clerk A');
   const [wagonId1, setWagonId1] = useState('');
   const [wagonId2, setWagonId2] = useState('');
   const [wagonId3, setWagonId3] = useState('');
   const [receivedAt, setReceivedAt] = useState('');
-  const [loadedAt] = useState('WalvisBay'); // static
+  const [loadedAt] = useState('WalvisBay'); // static as requested
 
   const [pending, setPending] = useState(null);
   const [qrExtras, setQrExtras] = useState({ grade: '', railType: '', spec: '', lengthM: '' });
@@ -116,25 +116,16 @@ export default function App() {
   const [dupPrompt, setDupPrompt] = useState(null);
   const [removePrompt, setRemovePrompt] = useState(null);
 
-  // Manual entry (Damaged QR)
-  const [manualSerial, setManualSerial] = useState('');
-  const [manualGrade, setManualGrade] = useState('');
-  const [manualRailType, setManualRailType] = useState('');
-  const [manualSpec, setManualSpec] = useState('');
-  const [manualLength, setManualLength] = useState('');
-
   // pagination + total count
   const [totalCount, setTotalCount] = useState(0);
   const [nextCursor, setNextCursor] = useState(null);
   const PAGE_SIZE = 200;
 
-  // Socket ref
+  // reference to socket (shared)
   const socketRef = useRef(null);
 
-  // ----- Audio (beep only on successful QR scan) -----
+  // ------- Beep (scan only) -------
   const beepRef = useRef(null);
-  const audioUnlockedRef = useRef(false);
-
   const ensureBeep = (hz = 1500) => {
     try {
       if (!beepRef.current) {
@@ -145,21 +136,22 @@ export default function App() {
         audio.preload = 'auto';
         beepRef.current = audio;
       }
-      // Playback rate nudged by freq
-      beepRef.current.playbackRate = Math.max(0.75, Math.min(2, hz / 1500));
+      beepRef.current.playbackRate = Math.max(0.5, Math.min(2, hz / 1500));
       beepRef.current.currentTime = 0;
       const p = beepRef.current.play();
       if (p && typeof p.then === 'function') p.catch(() => {});
     } catch {}
   };
+  const okBeep = () => ensureBeep(1500);  // success/new scan
+  const warnBeep = () => ensureBeep(900); // duplicate scan (still a successful read)
 
-  const unlockAudio = () => {
-    if (audioUnlockedRef.current) return;
-    try {
-      ensureBeep(1200); // attempt on gesture
-      audioUnlockedRef.current = true;
-    } catch {}
-  };
+  // ----- Damaged QR dropdown state & fields -----
+  const [showDamaged, setShowDamaged] = useState(false);
+  const [manualSerial, setManualSerial] = useState('');
+  const [manualRailType, setManualRailType] = useState('');
+  const [manualGrade, setManualGrade] = useState('');
+  const [manualSpec, setManualSpec] = useState('');
+  const [manualLength, setManualLength] = useState('');
 
   // initial load: total count + first page
   useEffect(() => {
@@ -172,7 +164,7 @@ export default function App() {
         const countData = await countResp.json().catch(()=>({count:0}));
         const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
 
-        // normalize keys
+        // normalize wagon keys
         const normalized = (pageData.rows || []).map((r) => ({
           ...r,
           wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
@@ -224,7 +216,7 @@ export default function App() {
         if (resp.ok) {
           await idbClear(items.map(x => x.id));
           setTotalCount(c => c + payload.length);
-          // pull fresh page
+          // Optional: pull fresh page so local temp ids reconcile
           try {
             const pageResp = await fetch(api(`/staged?limit=${PAGE_SIZE}`));
             const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
@@ -254,6 +246,7 @@ export default function App() {
   // Live sync via shared Socket.IO client
   useEffect(() => {
     socketRef.current = socket;
+
     try { socket.connect(); } catch {}
 
     const onNew = (row) => {
@@ -283,7 +276,9 @@ export default function App() {
     };
 
     const onCleared = () => {
-      setScans([]); setTotalCount(0); setNextCursor(null);
+      setScans([]);
+      setTotalCount(0);
+      setNextCursor(null);
       setStatus('All scans cleared (synced)');
     };
 
@@ -312,7 +307,6 @@ export default function App() {
     };
   }, []);
 
-  // Fast membership helper
   const scanSerialSet = useMemo(() => {
     const s = new Set();
     for (const r of scans) if (r?.serial) s.add(String(r.serial).trim().toUpperCase());
@@ -325,7 +319,7 @@ export default function App() {
     return scans.filter((r) => String(r.serial || '').trim().toUpperCase() === key);
   };
 
-  // ---- QR SCAN HANDLER (beep only here) ----
+  // ---- Scan handler (beep on successful read) ----
   const onDetected = (rawText) => {
     const parsed = parseQrPayload(rawText);
     const serial = parsed.serial || rawText;
@@ -333,7 +327,8 @@ export default function App() {
     if (serial) {
       const matches = findDuplicates(serial);
       if (matches.length > 0) {
-        // Duplicate always shows prompt
+        // successful read but duplicate
+        warnBeep();
         setDupPrompt({
           serial: String(serial).toUpperCase(),
           matches,
@@ -352,15 +347,12 @@ export default function App() {
           },
         });
         setStatus('Duplicate detected — awaiting decision');
-        // successful scan still happened -> beep
-        ensureBeep(1500);
         return;
       }
     }
 
-    // Successful new scan -> beep
-    ensureBeep(1500);
-
+    // new successful read
+    okBeep();
     setPending({
       serial: parsed.serial || rawText,
       raw: parsed.raw || String(rawText),
@@ -375,10 +367,6 @@ export default function App() {
     setStatus('Captured — review & Confirm');
   };
 
-  const onUserInteract = () => {
-    unlockAudio(); // called by Scanner when Start Scanner is tapped
-  };
-
   const handleDupDiscard = () => {
     setDupPrompt(null);
     setPending(null);
@@ -387,6 +375,7 @@ export default function App() {
   };
   const handleDupContinue = () => {
     if (!dupPrompt) return;
+    okBeep(); // still treat as a confirmed action
     setPending(dupPrompt.candidate.pending);
     setQrExtras(dupPrompt.candidate.qrExtras);
     setDupPrompt(null);
@@ -398,7 +387,10 @@ export default function App() {
     if (!removePrompt) return;
     try {
       const resp = await fetch(api(`/staged/${removePrompt}`), { method: 'DELETE' });
-      if (!resp.ok) throw new Error(await resp.text().catch(() => 'Failed to remove scan'));
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => '');
+        throw new Error(errText || 'Failed to remove scan');
+      }
       setScans((prev) => prev.filter((scan) => scan.id !== removePrompt));
       setTotalCount(c => Math.max(0, c - 1));
       setRemovePrompt(null);
@@ -413,7 +405,7 @@ export default function App() {
 
   const confirmPending = async () => {
     if (!pending?.serial || !String(pending.serial).trim()) {
-      alert('Nothing to save yet. Scan a QR first. If it is damaged, use “Save Damaged QR”.');
+      alert('Nothing to save yet. Scan a code first. If QR is damaged, use the Damaged QR dropdown.');
       return;
     }
 
@@ -440,7 +432,10 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rec),
       });
-      const data = await resp.json().catch(()=>null);
+
+      let data = null;
+      try { data = await resp.json(); } catch {}
+
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
       const newId = data?.id || Date.now();
@@ -451,7 +446,6 @@ export default function App() {
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
       setStatus('Saved to staged');
     } catch (e) {
-      // Offline/failed: queue to IndexedDB for later
       await idbAdd({ payload: rec });
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
       setTotalCount(c => c + 1);
@@ -461,10 +455,10 @@ export default function App() {
     }
   };
 
-  // Save Damaged QR (manual)
+  // ---- Save Damaged (dropdown) ----
   const saveDamaged = async () => {
     if (!manualSerial.trim()) {
-      alert('Unable to save: enter Serial or scan a QR.');
+      alert('Unable to save: enter Serial (or scan a QR).');
       return;
     }
 
@@ -482,14 +476,11 @@ export default function App() {
       railType: manualRailType.trim(),
       spec: manualSpec.trim(),
       lengthM: manualLength.trim(),
-      qrRaw: manualSerial.trim(), // fallback
+      qrRaw: manualSerial.trim(),
     };
 
-    // If duplicate, warn (but allow save)
     const matches = findDuplicates(rec.serial);
-    if (matches.length > 0 && !confirm(`Duplicate found (${matches.length}) — Save anyway?`)) {
-      return;
-    }
+    if (matches.length > 0 && !confirm(`Duplicate found (${matches.length}). Save anyway?`)) return;
 
     try {
       const resp = await fetch(api('/scan'), {
@@ -504,27 +495,100 @@ export default function App() {
       setScans((prev) => [{ id: newId, ...rec }, ...prev]);
       setTotalCount((c) => c + 1);
 
-      // clear manual fields
+      // clear and collapse dropdown
       setManualSerial('');
-      setManualGrade('');
       setManualRailType('');
+      setManualGrade('');
       setManualSpec('');
       setManualLength('');
+      setShowDamaged(false);
       setStatus('Damaged QR saved');
     } catch (e) {
       await idbAdd({ payload: rec });
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
       setTotalCount((c) => c + 1);
       setManualSerial('');
-      setManualGrade('');
       setManualRailType('');
+      setManualGrade('');
       setManualSpec('');
       setManualLength('');
+      setShowDamaged(false);
       setStatus('Damaged QR saved locally (offline) — will sync');
     }
   };
 
+  const exportToExcel = async () => {
+    try {
+      const resp = await fetch(api('/export-to-excel'), { method: 'POST' });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        throw new Error(text || `HTTP ${resp.status}`);
+      }
+      const dispo = resp.headers.get('Content-Disposition') || '';
+      const match = dispo.match(/filename="?([^"]+)"?/i);
+      const filename = match?.[1] || `Master_${Date.now()}.xlsm`;
+
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setStatus(`Exported ${filename}`);
+    } catch (e) {
+      console.error('Export failed:', e);
+      alert(`Export failed: ${e.message}\n(Ensure uploads/template.xlsm exists on the server)`);
+      setStatus('Export failed');
+    }
+  };
+
+  const exportXlsxWithImages = async () => {
+    try {
+      const resp = await fetch(api('/export-xlsx-images'), { method: 'POST' });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        throw new Error(text || `HTTP ${resp.status}`);
+      }
+      const dispo = resp.headers.get('Content-Disposition') || '';
+      const match = dispo.match(/filename="?([^"]+)"?/i);
+      const filename = match?.[1] || `Master_QR_${Date.now()}.xlsx`;
+
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setStatus(`Exported ${filename}`);
+    } catch (e) {
+      console.error('Export (images) failed:', e);
+      alert(`Export (images) failed: ${e.message}`);
+      setStatus('Export (images) failed');
+    }
+  };
+
   // ---------- RENDER ----------
+  if (showStart) {
+    return (
+      <div style={{ minHeight: '100vh', background: '#fff' }}>
+        <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
+          <StartPage
+            onContinue={() => setShowStart(false)}
+            onExport={exportToExcel}
+            operator={operator}
+            setOperator={setOperator}
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="container" style={{ paddingTop: 20, paddingBottom: 20 }}>
       <header className="app-header">
@@ -536,6 +600,7 @@ export default function App() {
               <div className="status">{status}</div>
             </div>
           </div>
+          <button className="btn btn-outline" onClick={() => setShowStart(true)}>Back to Start</button>
         </div>
       </header>
 
@@ -543,7 +608,7 @@ export default function App() {
         {/* Scanner */}
         <section className="card">
           <h3>Scanner</h3>
-          <Scanner onDetected={onDetected} onUserInteract={onUserInteract} />
+          <Scanner onDetected={onDetected} />
           {pending && (
             <div className="notice" style={{ marginTop: 10 }}>
               <div><strong>Pending Serial:</strong> {pending.serial}</div>
@@ -552,11 +617,9 @@ export default function App() {
           )}
         </section>
 
-        {/* Controls + Manual Entry */}
+        {/* Controls */}
         <section className="card">
-          <h3>Controls & Manual (Damaged QR)</h3>
-
-          {/* Operator / Wagon / Locations */}
+          <h3>Controls</h3>
           <div className="controls-grid" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
             <div>
               <label className="status">Operator</label>
@@ -603,7 +666,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Actions (QR path) */}
           <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn" onClick={confirmPending} disabled={!pending}>Confirm & Save</button>
             <button
@@ -612,36 +674,85 @@ export default function App() {
             >
               Discard
             </button>
+            <button className="btn" onClick={exportToExcel}>Export to Excel</button>
+            <button className="btn" onClick={exportXlsxWithImages}>Export XLSX (with QR images)</button>
           </div>
 
-          <hr style={{ margin: '16px 0', borderColor: 'var(--border)' }} />
+          {/* Damaged QR dropdown */}
+          <div style={{ marginTop: 16 }}>
+            <button
+              className="btn btn-outline"
+              onClick={() => setShowDamaged((v) => !v)}
+              aria-expanded={showDamaged}
+              aria-controls="damaged-panel"
+            >
+              {showDamaged ? 'Hide Damaged QR' : 'Damaged QR'}
+            </button>
 
-          {/* Manual Entry for Damaged QR */}
-          <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
-            <div>
-              <label className="status">Serial (Damaged QR)</label>
-              <input className="input" value={manualSerial} onChange={(e) => setManualSerial(e.target.value)} placeholder="Enter serial manually" />
-            </div>
-            <div>
-              <label className="status">Rail Type</label>
-              <input className="input" value={manualRailType} onChange={(e) => setManualRailType(e.target.value)} placeholder="e.g. R260HT" />
-            </div>
-            <div>
-              <label className="status">Grade</label>
-              <input className="input" value={manualGrade} onChange={(e) => setManualGrade(e.target.value)} placeholder="e.g. SAR50" />
-            </div>
-            <div>
-              <label className="status">Spec</label>
-              <input className="input" value={manualSpec} onChange={(e) => setManualSpec(e.target.value)} placeholder="e.g. AREMA 2020" />
-            </div>
-            <div>
-              <label className="status">Length</label>
-              <input className="input" value={manualLength} onChange={(e) => setManualLength(e.target.value)} placeholder="e.g. 12m" />
-            </div>
-          </div>
+            {showDamaged && (
+              <div id="damaged-panel" className="card" style={{ marginTop: 12 }}>
+                <div className="status" style={{ marginBottom: 8 }}>
+                  Enter details when the QR is damaged and cannot be scanned.
+                </div>
+                <div
+                  style={{
+                    display: 'grid',
+                    gap: 12,
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))'
+                  }}
+                >
+                  <div>
+                    <label className="status">Serial *</label>
+                    <input
+                      className="input"
+                      value={manualSerial}
+                      onChange={(e) => setManualSerial(e.target.value)}
+                      placeholder="Enter serial manually"
+                    />
+                  </div>
+                  <div>
+                    <label className="status">Rail Type</label>
+                    <input
+                      className="input"
+                      value={manualRailType}
+                      onChange={(e) => setManualRailType(e.target.value)}
+                      placeholder="e.g. R260HT"
+                    />
+                  </div>
+                  <div>
+                    <label className="status">Grade</label>
+                    <input
+                      className="input"
+                      value={manualGrade}
+                      onChange={(e) => setManualGrade(e.target.value)}
+                      placeholder="e.g. SAR50"
+                    />
+                  </div>
+                  <div>
+                    <label className="status">Spec</label>
+                    <input
+                      className="input"
+                      value={manualSpec}
+                      onChange={(e) => setManualSpec(e.target.value)}
+                      placeholder="e.g. AREMA 2020"
+                    />
+                  </div>
+                  <div>
+                    <label className="status">Length</label>
+                    <input
+                      className="input"
+                      value={manualLength}
+                      onChange={(e) => setManualLength(e.target.value)}
+                      placeholder="e.g. 12m"
+                    />
+                  </div>
+                </div>
 
-          <div style={{ marginTop: 12 }}>
-            <button className="btn" onClick={saveDamaged}>Save Damaged QR</button>
+                <div style={{ marginTop: 12 }}>
+                  <button className="btn" onClick={saveDamaged}>Save Damaged QR</button>
+                </div>
+              </div>
+            )}
           </div>
         </section>
 
@@ -694,14 +805,17 @@ export default function App() {
 
       {/* Remove confirmation */}
       {removePrompt && (
-        <div role="dialog" aria-modal="true"
-          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}>
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}
+        >
           <div className="card" style={{ maxWidth: 520, width: '100%', border: '1px solid var(--border)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}>
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
               <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(220,38,38,.1)', color: 'rgb(220,38,38)', fontSize: 22 }}>⚠️</div>
               <div style={{ flex: 1 }}>
                 <h3 style={{ margin: 0 }}>Are you sure?</h3>
-                <div className="status" style={{ marginTop: 6 }}>Remove this staged scan?</div>
+                <div className="status" style={{ marginTop: 6 }}>Are you sure you want to remove this staged scan from the list?</div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
                   <button className="btn btn-outline" onClick={discardRemovePrompt}>Cancel</button>
                   <button className="btn" onClick={confirmRemoveScan}>Confirm</button>
@@ -714,8 +828,11 @@ export default function App() {
 
       {/* Duplicate modal */}
       {dupPrompt && (
-        <div role="dialog" aria-modal="true"
-          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}>
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}
+        >
           <div className="card" style={{ maxWidth: 560, width: '100%', border: '1px solid var(--border)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}>
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
               <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(251,191,36,.15)', color: 'rgb(202,138,4)', fontSize: 22 }}>⚠️</div>

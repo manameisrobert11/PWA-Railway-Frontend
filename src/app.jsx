@@ -138,7 +138,6 @@ export default function App() {
       if (audioCtxRef.current.state === 'suspended') {
         await audioCtxRef.current.resume();
       }
-      // tiny ping to confirm
       playBeep(1200, 60);
       setSoundOn(true);
       localStorage.setItem('rail-sound-enabled', '1');
@@ -153,7 +152,7 @@ export default function App() {
       const gain = ctx.createGain();
       osc.type = 'square';
       osc.frequency.value = freq;
-      gain.gain.value = 0.06; // quiet click
+      gain.gain.value = 0.06;
       osc.connect(gain).connect(ctx.destination);
       const now = ctx.currentTime;
       osc.start(now);
@@ -162,10 +161,9 @@ export default function App() {
   };
 
   const okBeep = () => playBeep(1500, 80);  // success/new scan
-  const warnBeep = () => playBeep(900, 90); // duplicate scan (still a successful read)
+  const warnBeep = () => playBeep(900, 90); // duplicate
 
   useEffect(() => {
-    // auto-remember if user enabled previously
     if (localStorage.getItem('rail-sound-enabled') === '1') {
       enableSound();
     }
@@ -475,15 +473,6 @@ export default function App() {
     }
   };
 
-  // ---- Save Damaged (dropdown) ----
-  const [showDamaged, setShowDamagedState] = useState(false);
-  const setShowDamaged = (fnOrVal) => {
-    const next = typeof fnOrVal === 'function' ? fnOrVal(showDamaged) : fnOrVal;
-    // Try to unlock audio on first interaction too
-    if (!soundOn) enableSound();
-    setShowDamagedState(next);
-  };
-
   const saveDamaged = async () => {
     if (!manualSerial.trim()) {
       alert('Unable to save: enter Serial (or scan a QR).');
@@ -575,7 +564,7 @@ export default function App() {
   const exportXlsxWithImages = async () => {
     try {
       const resp = await fetch(api('/export-xlsx-images'), { method: 'POST' });
-    if (!resp.ok) {
+      if (!resp.ok) {
         const text = await resp.text().catch(() => '');
         throw new Error(text || `HTTP ${resp.status}`);
       }
@@ -715,7 +704,7 @@ export default function App() {
           <div style={{ marginTop: 16 }}>
             <button
               className="btn btn-outline"
-              onClick={() => setShowDamaged((v) => !v)}
+              onClick={() => { if (!soundOn) enableSound(); setShowDamaged(v => !v); }}
               aria-expanded={showDamaged}
               aria-controls="damaged-panel"
             >

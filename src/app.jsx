@@ -124,26 +124,52 @@ export default function App() {
   // reference to socket (shared)
   const socketRef = useRef(null);
 
-  // ------- Beep (scan only) -------
-  const beepRef = useRef(null);
-  const ensureBeep = (hz = 1500) => {
+  // ------- Web-Audio beeper (user-gesture unlock) -------
+  const audioCtxRef = useRef(null);
+  const [soundOn, setSoundOn] = useState(false);
+
+  const enableSound = async () => {
     try {
-      if (!beepRef.current) {
-        // short click-like wav
-        const dataUri = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYBAGZkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZAA=';
-        const audio = new Audio();
-        audio.src = dataUri;
-        audio.preload = 'auto';
-        beepRef.current = audio;
+      if (!audioCtxRef.current) {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return alert('AudioContext not supported on this device/browser.');
+        audioCtxRef.current = new Ctx();
       }
-      beepRef.current.playbackRate = Math.max(0.5, Math.min(2, hz / 1500));
-      beepRef.current.currentTime = 0;
-      const p = beepRef.current.play();
-      if (p && typeof p.then === 'function') p.catch(() => {});
+      if (audioCtxRef.current.state === 'suspended') {
+        await audioCtxRef.current.resume();
+      }
+      // tiny ping to confirm
+      playBeep(1200, 60);
+      setSoundOn(true);
+      localStorage.setItem('rail-sound-enabled', '1');
     } catch {}
   };
-  const okBeep = () => ensureBeep(1500);  // success/new scan
-  const warnBeep = () => ensureBeep(900); // duplicate scan (still a successful read)
+
+  const playBeep = (freq = 1500, durationMs = 80) => {
+    try {
+      const ctx = audioCtxRef.current;
+      if (!ctx || !soundOn) return;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.value = freq;
+      gain.gain.value = 0.06; // quiet click
+      osc.connect(gain).connect(ctx.destination);
+      const now = ctx.currentTime;
+      osc.start(now);
+      osc.stop(now + durationMs / 1000);
+    } catch {}
+  };
+
+  const okBeep = () => playBeep(1500, 80);  // success/new scan
+  const warnBeep = () => playBeep(900, 90); // duplicate scan (still a successful read)
+
+  useEffect(() => {
+    // auto-remember if user enabled previously
+    if (localStorage.getItem('rail-sound-enabled') === '1') {
+      enableSound();
+    }
+  }, []);
 
   // ----- Damaged QR dropdown state & fields -----
   const [showDamaged, setShowDamaged] = useState(false);
@@ -164,7 +190,6 @@ export default function App() {
         const countData = await countResp.json().catch(()=>({count:0}));
         const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
 
-        // normalize wagon keys
         const normalized = (pageData.rows || []).map((r) => ({
           ...r,
           wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
@@ -216,7 +241,6 @@ export default function App() {
         if (resp.ok) {
           await idbClear(items.map(x => x.id));
           setTotalCount(c => c + payload.length);
-          // Optional: pull fresh page so local temp ids reconcile
           try {
             const pageResp = await fetch(api(`/staged?limit=${PAGE_SIZE}`));
             const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
@@ -246,7 +270,6 @@ export default function App() {
   // Live sync via shared Socket.IO client
   useEffect(() => {
     socketRef.current = socket;
-
     try { socket.connect(); } catch {}
 
     const onNew = (row) => {
@@ -289,7 +312,6 @@ export default function App() {
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
     socket.io?.on?.('error', onConnectError);
-
     socket.on('new-scan', onNew);
     socket.on('deleted-scan', onDeleted);
     socket.on('cleared-scans', onCleared);
@@ -327,8 +349,7 @@ export default function App() {
     if (serial) {
       const matches = findDuplicates(serial);
       if (matches.length > 0) {
-        // successful read but duplicate
-        warnBeep();
+        warnBeep(); // successful read but duplicate
         setDupPrompt({
           serial: String(serial).toUpperCase(),
           matches,
@@ -351,8 +372,7 @@ export default function App() {
       }
     }
 
-    // new successful read
-    okBeep();
+    okBeep(); // new successful read
     setPending({
       serial: parsed.serial || rawText,
       raw: parsed.raw || String(rawText),
@@ -392,7 +412,7 @@ export default function App() {
         throw new Error(errText || 'Failed to remove scan');
       }
       setScans((prev) => prev.filter((scan) => scan.id !== removePrompt));
-      setTotalCount(c => Math.max(0, c - 1));
+      setTotalCount(c => Math.max(0,  c - 1));
       setRemovePrompt(null);
       setStatus('Scan removed successfully');
     } catch (e) {
@@ -456,6 +476,14 @@ export default function App() {
   };
 
   // ---- Save Damaged (dropdown) ----
+  const [showDamaged, setShowDamagedState] = useState(false);
+  const setShowDamaged = (fnOrVal) => {
+    const next = typeof fnOrVal === 'function' ? fnOrVal(showDamaged) : fnOrVal;
+    // Try to unlock audio on first interaction too
+    if (!soundOn) enableSound();
+    setShowDamagedState(next);
+  };
+
   const saveDamaged = async () => {
     if (!manualSerial.trim()) {
       alert('Unable to save: enter Serial (or scan a QR).');
@@ -492,10 +520,9 @@ export default function App() {
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
       const newId = data?.id || Date.now();
-      setScans((prev) => [{ id: newId, ...rec }, ...prev]);
+      setScans((prev) => [{ id: newId, ...rec }, ...prev ]);
       setTotalCount((c) => c + 1);
 
-      // clear and collapse dropdown
       setManualSerial('');
       setManualRailType('');
       setManualGrade('');
@@ -505,7 +532,7 @@ export default function App() {
       setStatus('Damaged QR saved');
     } catch (e) {
       await idbAdd({ payload: rec });
-      setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
+      setScans((prev) => [{ id: Date.now(), ...rec }, ...prev ]);
       setTotalCount((c) => c + 1);
       setManualSerial('');
       setManualRailType('');
@@ -548,7 +575,7 @@ export default function App() {
   const exportXlsxWithImages = async () => {
     try {
       const resp = await fetch(api('/export-xlsx-images'), { method: 'POST' });
-      if (!resp.ok) {
+    if (!resp.ok) {
         const text = await resp.text().catch(() => '');
         throw new Error(text || `HTTP ${resp.status}`);
       }
@@ -592,7 +619,7 @@ export default function App() {
   return (
     <div className="container" style={{ paddingTop: 20, paddingBottom: 20 }}>
       <header className="app-header">
-        <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div className="logo" />
             <div>
@@ -600,7 +627,13 @@ export default function App() {
               <div className="status">{status}</div>
             </div>
           </div>
-          <button className="btn btn-outline" onClick={() => setShowStart(true)}>Back to Start</button>
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button className="btn btn-outline" onClick={() => setShowStart(true)}>Back to Start</button>
+            <button className="btn" onClick={enableSound}>
+              {soundOn ? '🔊 Sound On' : '🔈 Enable Sound'}
+            </button>
+          </div>
         </div>
       </header>
 

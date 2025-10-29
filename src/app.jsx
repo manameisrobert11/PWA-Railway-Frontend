@@ -11,6 +11,14 @@ const api = (p) => {
   return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
 };
 
+// ---- Fixed values for Damaged QR ----
+const FIXED_DAMAGED = {
+  grade: 'SAR48',
+  railType: 'R260',
+  spec: 'ATA 2DX066-25',
+  lengthM: '36 m',
+};
+
 // ---- QR parsing (length/spec/railType; no grade duplication) ----
 function parseQrPayload(raw) {
   const clean = String(raw || '')
@@ -172,10 +180,6 @@ export default function App() {
   // ----- Damaged QR dropdown state & fields -----
   const [showDamaged, setShowDamaged] = useState(false);
   const [manualSerial, setManualSerial] = useState('');
-  const [manualRailType, setManualRailType] = useState('');
-  const [manualGrade, setManualGrade] = useState('');
-  const [manualSpec, setManualSpec] = useState('');
-  const [manualLength, setManualLength] = useState('');
 
   // initial load: total count + first page
   useEffect(() => {
@@ -489,10 +493,10 @@ export default function App() {
       receivedAt,
       loadedAt,
       timestamp: new Date().toISOString(),
-      grade: manualGrade.trim(),
-      railType: manualRailType.trim(),
-      spec: manualSpec.trim(),
-      lengthM: manualLength.trim(),
+      grade: FIXED_DAMAGED.grade,
+      railType: FIXED_DAMAGED.railType,
+      spec: FIXED_DAMAGED.spec,
+      lengthM: FIXED_DAMAGED.lengthM,
       qrRaw: manualSerial.trim(),
     };
 
@@ -513,10 +517,6 @@ export default function App() {
       setTotalCount((c) => c + 1);
 
       setManualSerial('');
-      setManualRailType('');
-      setManualGrade('');
-      setManualSpec('');
-      setManualLength('');
       setShowDamaged(false);
       setStatus('Damaged QR saved');
     } catch (e) {
@@ -524,10 +524,6 @@ export default function App() {
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev ]);
       setTotalCount((c) => c + 1);
       setManualSerial('');
-      setManualRailType('');
-      setManualGrade('');
-      setManualSpec('');
-      setManualLength('');
       setShowDamaged(false);
       setStatus('Damaged QR saved locally (offline) — will sync');
     }
@@ -732,40 +728,40 @@ export default function App() {
                       placeholder="Enter serial manually"
                     />
                   </div>
+
                   <div>
-                    <label className="status">Rail Type</label>
+                    <label className="status">Rail Type (fixed)</label>
                     <input
                       className="input"
-                      value={manualRailType}
-                      onChange={(e) => setManualRailType(e.target.value)}
-                      placeholder="e.g. R260HT"
+                      value={FIXED_DAMAGED.railType}
+                      readOnly
                     />
                   </div>
+
                   <div>
-                    <label className="status">Grade</label>
+                    <label className="status">Grade (fixed)</label>
                     <input
                       className="input"
-                      value={manualGrade}
-                      onChange={(e) => setManualGrade(e.target.value)}
-                      placeholder="e.g. SAR50"
+                      value={FIXED_DAMAGED.grade}
+                      readOnly
                     />
                   </div>
+
                   <div>
-                    <label className="status">Spec</label>
+                    <label className="status">Spec (fixed)</label>
                     <input
                       className="input"
-                      value={manualSpec}
-                      onChange={(e) => setManualSpec(e.target.value)}
-                      placeholder="e.g. AREMA 2020"
+                      value={FIXED_DAMAGED.spec}
+                      readOnly
                     />
                   </div>
+
                   <div>
-                    <label className="status">Length</label>
+                    <label className="status">Length (fixed)</label>
                     <input
                       className="input"
-                      value={manualLength}
-                      onChange={(e) => setManualLength(e.target.value)}
-                      placeholder="e.g. 12m"
+                      value={FIXED_DAMAGED.lengthM}
+                      readOnly
                     />
                   </div>
                 </div>

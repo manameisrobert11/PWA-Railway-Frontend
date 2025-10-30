@@ -168,8 +168,9 @@ export default function App() {
     } catch {}
   };
 
-  const okBeep = () => playBeep(1500, 80);  // success/new scan
-  const warnBeep = () => playBeep(900, 90); // duplicate
+  const okBeep = () => playBeep(1500, 80);   // success/new scan (existing)
+  const warnBeep = () => playBeep(900, 90);  // duplicate (existing)
+  const savedBeep = () => playBeep(2000, 140); // NEW: successful save to staged (distinct)
 
   useEffect(() => {
     if (localStorage.getItem('rail-sound-enabled') === '1') {
@@ -467,6 +468,7 @@ export default function App() {
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
       setStatus('Saved to staged');
+      savedBeep(); // NEW: play distinct sound on successful save (online)
     } catch (e) {
       await idbAdd({ payload: rec });
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
@@ -474,6 +476,7 @@ export default function App() {
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
       setStatus('Saved locally (offline) — will sync');
+      savedBeep(); // NEW: play distinct sound on successful local save (offline)
     }
   };
 
@@ -519,6 +522,7 @@ export default function App() {
       setManualSerial('');
       setShowDamaged(false);
       setStatus('Damaged QR saved');
+      savedBeep(); // NEW: saved successfully (online)
     } catch (e) {
       await idbAdd({ payload: rec });
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev ]);
@@ -526,6 +530,7 @@ export default function App() {
       setManualSerial('');
       setShowDamaged(false);
       setStatus('Damaged QR saved locally (offline) — will sync');
+      savedBeep(); // NEW: saved successfully (offline)
     }
   };
 
@@ -625,8 +630,30 @@ export default function App() {
       <div className="grid" style={{ marginTop: 20 }}>
         {/* Scanner */}
         <section className="card">
-          <h3>Scanner</h3>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 8,
+              flexWrap: 'wrap'
+            }}
+          >
+            <h3 style={{ margin: 0 }}>Scanner</h3>
+
+            {/* Quick action so you don't have to scroll */}
+            <button
+              className="btn"
+              onClick={confirmPending}
+              disabled={!pending}
+              title={pending ? 'Confirm & Save current scan' : 'No pending scan yet'}
+            >
+              Confirm & Save
+            </button>
+          </div>
+
           <Scanner onDetected={onDetected} />
+
           {pending && (
             <div className="notice" style={{ marginTop: 10 }}>
               <div><strong>Pending Serial:</strong> {pending.serial}</div>

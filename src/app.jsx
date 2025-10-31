@@ -170,7 +170,7 @@ export default function App() {
 
   const okBeep = () => playBeep(1500, 80);   // success/new scan (existing)
   const warnBeep = () => playBeep(900, 90);  // duplicate (existing)
-  const savedBeep = () => playBeep(2000, 140); // NEW: successful save to staged (distinct)
+  const savedBeep = () => playBeep(2000, 140); // saved
 
   useEffect(() => {
     if (localStorage.getItem('rail-sound-enabled') === '1') {
@@ -181,6 +181,23 @@ export default function App() {
   // ----- Damaged QR dropdown state & fields -----
   const [showDamaged, setShowDamaged] = useState(false);
   const [manualSerial, setManualSerial] = useState('');
+
+  // ---- FAST duplicate detection helpers ----
+  const serialSetRef = useRef(new Set());       // O(1) membership
+  const lastHitRef = useRef({ serial: '', at: 0 }); // debounce
+
+  // Rebuild fast serial set anytime scans list changes
+  useEffect(() => {
+    const s = new Set();
+    for (const r of scans) if (r?.serial) s.add(String(r.serial).trim().toUpperCase());
+    serialSetRef.current = s;
+  }, [scans]);
+
+  const localHasSerial = (serial) => {
+    const key = String(serial || '').trim().toUpperCase();
+    if (!key) return false;
+    return serialSetRef.current.has(key);
+  };
 
   // initial load: total count + first page
   useEffect(() => {
@@ -344,40 +361,85 @@ export default function App() {
     return scans.filter((r) => String(r.serial || '').trim().toUpperCase() === key);
   };
 
-  // ---- Scan handler (beep on successful read) ----
-  const onDetected = (rawText) => {
+  // ---- Scan handler with INSTANT duplicate detection (local + optional server) ----
+  const onDetected = async (rawText) => {
     const parsed = parseQrPayload(rawText);
-    const serial = parsed.serial || rawText;
+    const serial = (parsed.serial || rawText || '').trim();
+    const serialKey = serial.toUpperCase();
 
-    if (serial) {
-      const matches = findDuplicates(serial);
-      if (matches.length > 0) {
-        warnBeep(); // successful read but duplicate
-        setDupPrompt({
-          serial: String(serial).toUpperCase(),
-          matches,
-          candidate: {
-            pending: {
-              serial: String(serial).toUpperCase(),
-              raw: parsed.raw || String(rawText),
-              capturedAt: new Date().toISOString(),
-            },
-            qrExtras: {
-              grade: parsed.grade || '',
-              railType: parsed.railType || '',
-              spec: parsed.spec || '',
-              lengthM: parsed.lengthM || '',
-            },
-          },
-        });
-        setStatus('Duplicate detected — awaiting decision');
-        return;
-      }
+    if (!serialKey) {
+      warnBeep();
+      setStatus('Scan had no detectable serial');
+      return;
     }
 
-    okBeep(); // new successful read
+    // Debounce identical frames for 1.2s
+    const now = Date.now();
+    if (lastHitRef.current.serial === serialKey && now - lastHitRef.current.at < 1200) {
+      return;
+    }
+    lastHitRef.current = { serial: serialKey, at: now };
+
+    // 1) Instant local check (O(1))
+    if (localHasSerial(serialKey)) {
+      warnBeep();
+      setDupPrompt({
+        serial: serialKey,
+        matches: findDuplicates(serialKey),
+        candidate: {
+          pending: {
+            serial: serialKey,
+            raw: parsed.raw || String(rawText),
+            capturedAt: new Date().toISOString(),
+          },
+          qrExtras: {
+            grade: parsed.grade || '',
+            railType: parsed.railType || '',
+            spec: parsed.spec || '',
+            lengthM: parsed.lengthM || '',
+          },
+        },
+      });
+      setStatus('Duplicate detected — awaiting decision');
+      return;
+    }
+
+    // 2) Optional server check to catch other devices (ignore if 404/disabled)
+    try {
+      const resp = await fetch(api(`/exists/${encodeURIComponent(serialKey)}`));
+      if (resp.ok) {
+        const info = await resp.json();
+        if (info?.exists) {
+          warnBeep();
+          setDupPrompt({
+            serial: serialKey,
+            matches: [info.row || { serial: serialKey }],
+            candidate: {
+              pending: {
+                serial: serialKey,
+                raw: parsed.raw || String(rawText),
+                capturedAt: new Date().toISOString(),
+              },
+              qrExtras: {
+                grade: parsed.grade || '',
+                railType: parsed.railType || '',
+                spec: parsed.spec || '',
+                lengthM: parsed.lengthM || '',
+              },
+            },
+          });
+          setStatus('Duplicate detected — awaiting decision');
+          return;
+        }
+      }
+    } catch {
+      // ignore network errors; proceed based on local knowledge
+    }
+
+    // 3) Not a duplicate — proceed
+    okBeep();
     setPending({
-      serial: parsed.serial || rawText,
+      serial: serialKey,
       raw: parsed.raw || String(rawText),
       capturedAt: new Date().toISOString(),
     });
@@ -398,7 +460,7 @@ export default function App() {
   };
   const handleDupContinue = () => {
     if (!dupPrompt) return;
-    okBeep(); // still treat as a confirmed action
+    okBeep();
     setPending(dupPrompt.candidate.pending);
     setQrExtras(dupPrompt.candidate.qrExtras);
     setDupPrompt(null);
@@ -431,6 +493,24 @@ export default function App() {
       alert('Nothing to save yet. Scan a code first. If QR is damaged, use the Damaged QR dropdown.');
       return;
     }
+
+    // Re-check on server just before saving (race-safe with other devices)
+    try {
+      const r = await fetch(api(`/exists/${encodeURIComponent(pending.serial)}`));
+      if (r.ok) {
+        const j = await r.json();
+        if (j?.exists) {
+          warnBeep();
+          setDupPrompt({
+            serial: pending.serial,
+            matches: [j.row || { serial: pending.serial }],
+            candidate: { pending, qrExtras },
+          });
+          setStatus('Duplicate detected — awaiting decision');
+          return;
+        }
+      }
+    } catch {}
 
     const rec = {
       serial: String(pending.serial).trim(),
@@ -468,7 +548,7 @@ export default function App() {
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
       setStatus('Saved to staged');
-      savedBeep(); // NEW: play distinct sound on successful save (online)
+      savedBeep();
     } catch (e) {
       await idbAdd({ payload: rec });
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
@@ -476,7 +556,7 @@ export default function App() {
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
       setStatus('Saved locally (offline) — will sync');
-      savedBeep(); // NEW: play distinct sound on successful local save (offline)
+      savedBeep();
     }
   };
 
@@ -486,8 +566,24 @@ export default function App() {
       return;
     }
 
+    const serialKey = manualSerial.trim().toUpperCase();
+
+    // local instant duplicate warning
+    if (localHasSerial(serialKey)) {
+      if (!confirm('Duplicate detected locally. Save anyway?')) return;
+    } else {
+      // server pre-check
+      try {
+        const r = await fetch(api(`/exists/${encodeURIComponent(serialKey)}`));
+        if (r.ok) {
+          const j = await r.json();
+          if (j?.exists && !confirm('Duplicate exists on server. Save anyway?')) return;
+        }
+      } catch {}
+    }
+
     const rec = {
-      serial: manualSerial.trim(),
+      serial: serialKey,
       stage: 'received',
       operator,
       wagon1Id: wagonId1,
@@ -500,11 +596,8 @@ export default function App() {
       railType: FIXED_DAMAGED.railType,
       spec: FIXED_DAMAGED.spec,
       lengthM: FIXED_DAMAGED.lengthM,
-      qrRaw: manualSerial.trim(),
+      qrRaw: serialKey,
     };
-
-    const matches = findDuplicates(rec.serial);
-    if (matches.length > 0 && !confirm(`Duplicate found (${matches.length}). Save anyway?`)) return;
 
     try {
       const resp = await fetch(api('/scan'), {
@@ -522,7 +615,7 @@ export default function App() {
       setManualSerial('');
       setShowDamaged(false);
       setStatus('Damaged QR saved');
-      savedBeep(); // NEW: saved successfully (online)
+      savedBeep();
     } catch (e) {
       await idbAdd({ payload: rec });
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev ]);
@@ -530,7 +623,7 @@ export default function App() {
       setManualSerial('');
       setShowDamaged(false);
       setStatus('Damaged QR saved locally (offline) — will sync');
-      savedBeep(); // NEW: saved successfully (offline)
+      savedBeep();
     }
   };
 
@@ -884,7 +977,7 @@ export default function App() {
               <div style={{ flex: 1 }}>
                 <h3 style={{ margin: 0 }}>Duplicate detected</h3>
                 <div className="status" style={{ marginTop: 6 }}>
-                  The serial <strong>{dupPrompt.serial}</strong> already exists in the staged list ({dupPrompt.matches.length}).
+                  The serial <strong>{dupPrompt.serial}</strong> already exists in the staged list ({dupPrompt.matches?.length ?? 1}).
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
                   <button className="btn btn-outline" onClick={handleDupDiscard}>Discard</button>

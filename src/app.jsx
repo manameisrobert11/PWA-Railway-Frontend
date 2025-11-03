@@ -1,6 +1,3 @@
-Here’s your full, updated **`src/App.jsx`** with the duplicate “old staged row” highlight + auto-scroll behavior added exactly as requested.
-
-```jsx
 // src/App.jsx
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { socket } from './socket';
@@ -1031,3 +1028,4 @@ export default function App() {
   );
 }
 ```
+

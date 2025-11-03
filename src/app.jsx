@@ -1,3 +1,6 @@
+Here’s your full, updated **`src/App.jsx`** with the duplicate “old staged row” highlight + auto-scroll behavior added exactly as requested.
+
+```jsx
 // src/App.jsx
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { socket } from './socket';
@@ -185,6 +188,20 @@ export default function App() {
   // ---- FAST duplicate detection helpers ----
   const serialSetRef = useRef(new Set());       // O(1) membership
   const lastHitRef = useRef({ serial: '', at: 0 }); // debounce
+
+  // --- NEW: highlight & scroll the existing staged row on duplicate ---
+  const [flashSerial, setFlashSerial] = useState(null);
+  const flashExistingRow = (serialKey) => {
+    if (!serialKey) return;
+    setFlashSerial(serialKey);
+    // Scroll the existing row into view
+    requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-serial="${serialKey}"]`);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    // Remove highlight after 2.5s
+    setTimeout(() => setFlashSerial(null), 2500);
+  };
 
   // Rebuild fast serial set anytime scans list changes
   useEffect(() => {
@@ -400,6 +417,8 @@ export default function App() {
           },
         },
       });
+      // NEW: flash & scroll to the existing staged row
+      flashExistingRow(serialKey);
       setStatus('Duplicate detected — awaiting decision');
       return;
     }
@@ -428,6 +447,10 @@ export default function App() {
               },
             },
           });
+          // NEW: if we also have it locally, flash the local staged row
+          if (localHasSerial(serialKey)) {
+            flashExistingRow(serialKey);
+          }
           setStatus('Duplicate detected — awaiting decision');
           return;
         }
@@ -506,6 +529,10 @@ export default function App() {
             matches: [j.row || { serial: pending.serial }],
             candidate: { pending, qrExtras },
           });
+          // Optional: flash if it also exists locally
+          if (localHasSerial(String(pending.serial))) {
+            flashExistingRow(String(pending.serial).toUpperCase());
+          }
           setStatus('Duplicate detected — awaiting decision');
           return;
         }
@@ -899,7 +926,19 @@ export default function App() {
           <h3>Staged Scans ({totalCount})</h3>
           <div className="list">
             {scans.map((s) => (
-              <div key={s.id ?? `${s.serial}-${s.timestamp}`} className="row">
+              <div
+                key={s.id ?? `${s.serial}-${s.timestamp}`}
+                className="row"
+                data-serial={(s.serial || '').toString().trim().toUpperCase()}
+                style={{
+                  background:
+                    flashSerial &&
+                    (s.serial || '').toString().trim().toUpperCase() === flashSerial
+                      ? '#fff3cd' // soft amber highlight
+                      : undefined,
+                  transition: 'background 0.3s ease',
+                }}
+              >
                 <div className="title">{s.serial}</div>
                 <div className="meta">
                   {s.stage} • {s.operator} • {new Date(s.timestamp || Date.now()).toLocaleString()}
@@ -991,3 +1030,4 @@ export default function App() {
     </div>
   );
 }
+```

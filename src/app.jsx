@@ -1,4 +1,4 @@
-// src/App.jsx
+// src/app.jsx
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { socket } from './socket';
 import Scanner from './scanner/Scanner.jsx';
@@ -1027,5 +1027,3 @@ export default function App() {
     </div>
   );
 }
-```
-

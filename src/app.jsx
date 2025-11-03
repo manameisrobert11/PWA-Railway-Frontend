@@ -117,6 +117,7 @@ export default function App() {
   const [wagonId3, setWagonId3] = useState('');
   const [receivedAt, setReceivedAt] = useState('');
   const [loadedAt] = useState('WalvisBay'); // static as requested
+  const [destination, setDestination] = useState(''); // NEW: destination
 
   const [pending, setPending] = useState(null);
   const [qrExtras, setQrExtras] = useState({ grade: '', railType: '', spec: '', lengthM: '' });
@@ -168,9 +169,9 @@ export default function App() {
     } catch {}
   };
 
-  const okBeep = () => playBeep(1500, 80);   // success/new scan (existing)
-  const warnBeep = () => playBeep(900, 90);  // duplicate (existing)
-  const savedBeep = () => playBeep(2000, 140); // saved
+  const okBeep = () => playBeep(1500, 80);
+  const warnBeep = () => playBeep(900, 90);
+  const savedBeep = () => playBeep(2000, 140);
 
   useEffect(() => {
     if (localStorage.getItem('rail-sound-enabled') === '1') {
@@ -186,17 +187,15 @@ export default function App() {
   const serialSetRef = useRef(new Set());       // O(1) membership
   const lastHitRef = useRef({ serial: '', at: 0 }); // debounce
 
-  // --- NEW: highlight & scroll the existing staged row on duplicate ---
+  // --- highlight & scroll the existing staged row on duplicate ---
   const [flashSerial, setFlashSerial] = useState(null);
   const flashExistingRow = (serialKey) => {
     if (!serialKey) return;
     setFlashSerial(serialKey);
-    // Scroll the existing row into view
     requestAnimationFrame(() => {
       const el = document.querySelector(`[data-serial="${serialKey}"]`);
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
-    // Remove highlight after 2.5s
     setTimeout(() => setFlashSerial(null), 2500);
   };
 
@@ -231,6 +230,7 @@ export default function App() {
           wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
           receivedAt: r.receivedAt ?? r.recievedAt ?? '',
           loadedAt: r.loadedAt ?? '',
+          destination: r.destination ?? r.dest ?? '', // NEW
         }));
 
         setScans(normalized);
@@ -254,6 +254,7 @@ export default function App() {
       wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
       receivedAt: r.receivedAt ?? r.recievedAt ?? '',
       loadedAt: r.loadedAt ?? '',
+      destination: r.destination ?? r.dest ?? '', // NEW
     }));
 
     setScans(prev => [...prev, ...more]);
@@ -285,6 +286,7 @@ export default function App() {
               wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
               receivedAt: r.receivedAt ?? r.recievedAt ?? '',
               loadedAt: r.loadedAt ?? '',
+              destination: r.destination ?? r.dest ?? '', // NEW
             }));
             setScans(normalized);
             setNextCursor(pageData.nextCursor ?? null);
@@ -314,7 +316,10 @@ export default function App() {
           String(x.serial).trim().toUpperCase() === String(row.serial).trim().toUpperCase()
         );
         if (hasId || hasSerial) return prev;
-        return [{ ...row }, ...prev];
+        return [{
+          ...row,
+          destination: row.destination ?? row.dest ?? '', // ensure present
+        }, ...prev];
       });
       setTotalCount((c) => c + 1);
     };
@@ -414,7 +419,6 @@ export default function App() {
           },
         },
       });
-      // NEW: flash & scroll to the existing staged row
       flashExistingRow(serialKey);
       setStatus('Duplicate detected — awaiting decision');
       return;
@@ -444,7 +448,6 @@ export default function App() {
               },
             },
           });
-          // NEW: if we also have it locally, flash the local staged row
           if (localHasSerial(serialKey)) {
             flashExistingRow(serialKey);
           }
@@ -514,7 +517,7 @@ export default function App() {
       return;
     }
 
-    // Re-check on server just before saving (race-safe with other devices)
+    // Re-check on server just before saving
     try {
       const r = await fetch(api(`/exists/${encodeURIComponent(pending.serial)}`));
       if (r.ok) {
@@ -526,7 +529,6 @@ export default function App() {
             matches: [j.row || { serial: pending.serial }],
             candidate: { pending, qrExtras },
           });
-          // Optional: flash if it also exists locally
           if (localHasSerial(String(pending.serial))) {
             flashExistingRow(String(pending.serial).toUpperCase());
           }
@@ -545,6 +547,7 @@ export default function App() {
       wagon3Id: wagonId3,
       receivedAt,
       loadedAt,
+      destination, // NEW
       timestamp: new Date().toISOString(),
       grade: qrExtras.grade,
       railType: qrExtras.railType,
@@ -592,11 +595,9 @@ export default function App() {
 
     const serialKey = manualSerial.trim().toUpperCase();
 
-    // local instant duplicate warning
     if (localHasSerial(serialKey)) {
       if (!confirm('Duplicate detected locally. Save anyway?')) return;
     } else {
-      // server pre-check
       try {
         const r = await fetch(api(`/exists/${encodeURIComponent(serialKey)}`));
         if (r.ok) {
@@ -615,6 +616,7 @@ export default function App() {
       wagon3Id: wagonId3,
       receivedAt,
       loadedAt,
+      destination, // NEW
       timestamp: new Date().toISOString(),
       grade: FIXED_DAMAGED.grade,
       railType: FIXED_DAMAGED.railType,
@@ -810,6 +812,17 @@ export default function App() {
               <input className="input" value={loadedAt} readOnly />
             </div>
 
+            {/* NEW: Destination */}
+            <div>
+              <label className="status">Destination</label>
+              <input
+                className="input"
+                value={destination}
+                onChange={(e) => setDestination(e.target.value)}
+                placeholder="e.g. Arandis Yard / Customer X"
+              />
+            </div>
+
             <div>
               <label className="status">Grade</label>
               <input className="input" value={qrExtras.grade} readOnly />
@@ -875,38 +888,22 @@ export default function App() {
 
                   <div>
                     <label className="status">Rail Type (fixed)</label>
-                    <input
-                      className="input"
-                      value={FIXED_DAMAGED.railType}
-                      readOnly
-                    />
+                    <input className="input" value={FIXED_DAMAGED.railType} readOnly />
                   </div>
 
                   <div>
                     <label className="status">Grade (fixed)</label>
-                    <input
-                      className="input"
-                      value={FIXED_DAMAGED.grade}
-                      readOnly
-                    />
+                    <input className="input" value={FIXED_DAMAGED.grade} readOnly />
                   </div>
 
                   <div>
                     <label className="status">Spec (fixed)</label>
-                    <input
-                      className="input"
-                      value={FIXED_DAMAGED.spec}
-                      readOnly
-                    />
+                    <input className="input" value={FIXED_DAMAGED.spec} readOnly />
                   </div>
 
                   <div>
                     <label className="status">Length (fixed)</label>
-                    <input
-                      className="input"
-                      value={FIXED_DAMAGED.lengthM}
-                      readOnly
-                    />
+                    <input className="input" value={FIXED_DAMAGED.lengthM} readOnly />
                   </div>
                 </div>
 
@@ -931,7 +928,7 @@ export default function App() {
                   background:
                     flashSerial &&
                     (s.serial || '').toString().trim().toUpperCase() === flashSerial
-                      ? '#fff3cd' // soft amber highlight
+                      ? '#fff3cd'
                       : undefined,
                   transition: 'background 0.3s ease',
                 }}
@@ -951,6 +948,10 @@ export default function App() {
                     {s.receivedAt && s.loadedAt ? ' • ' : ''}
                     {s.loadedAt ? `Loaded at: ${s.loadedAt}` : ''}
                   </div>
+                )}
+
+                {s.destination && (
+                  <div className="meta">Destination: {s.destination}</div>
                 )}
 
                 <div className="meta">

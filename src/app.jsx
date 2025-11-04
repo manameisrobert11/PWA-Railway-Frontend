@@ -4,6 +4,7 @@ import { socket } from './socket';
 import Scanner from './scanner/Scanner.jsx';
 import StartPage from './StartPage.jsx';
 import './app.css';
+import * as XLSX from 'xlsx';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const api = (p) => {
@@ -184,8 +185,58 @@ export default function App() {
   const [manualSerial, setManualSerial] = useState('');
 
   // ---- FAST duplicate detection helpers ----
-  const serialSetRef = useRef(new Set());       // O(1) membership
-  const lastHitRef = useRef({ serial: '', at: 0 }); // debounce
+  const serialSetRef = useRef(new Set());            // O(1) for staged membership
+  const lastHitRef = useRef({ serial: '', at: 0 });  // debounce
+
+  // ---- Known (historical) serials imported from Excel/CSV ----
+  const knownSerialsRef = useRef(new Set());
+  const [knownCount, setKnownCount] = useState(0);
+  const normalizeSerial = (s) => String(s || '').trim().toUpperCase();
+  const isKnownDuplicate = (serial) => {
+    const key = normalizeSerial(serial);
+    return key && (serialSetRef.current.has(key) || knownSerialsRef.current.has(key));
+  };
+  const knownBadge = knownCount ? ` • Known: ${knownCount}` : '';
+
+  // Import UI/handler
+  const importInputRef = useRef(null);
+  const handleImportKnown = async (file) => {
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+      const set = knownSerialsRef.current;
+
+      // Try common headers; fallback to first column
+      const headerCandidates = ['serial', 'Serial', 'SERIAL', 'Serial Number', 'SERIAL_NUMBER', 'SN', 'sn'];
+      const firstRow = rows[0] || {};
+      let header = Object.keys(firstRow).find((h) => headerCandidates.includes(h)) || null;
+
+      if (header) {
+        for (const r of rows) {
+          const v = normalizeSerial(r[header]);
+          if (v) set.add(v);
+        }
+      } else {
+        const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        for (const row of aoa) {
+          const v = normalizeSerial(row?.[0]);
+          if (v) set.add(v);
+        }
+      }
+
+      setKnownCount(set.size);
+      setStatus(`Imported known serials: ${set.size}`);
+      savedBeep();
+    } catch (e) {
+      console.error(e);
+      setStatus('Import failed. Ensure there is a "serial" column or serials in column A.');
+      warnBeep();
+    } finally {
+      if (importInputRef.current) importInputRef.current.value = '';
+    }
+  };
 
   // --- highlight & scroll the existing staged row on duplicate ---
   const [flashSerial, setFlashSerial] = useState(null);
@@ -399,8 +450,8 @@ export default function App() {
     }
     lastHitRef.current = { serial: serialKey, at: now };
 
-    // 1) Instant local check (O(1))
-    if (localHasSerial(serialKey)) {
+    // 1) INSTANT union check: staged OR imported master list
+    if (isKnownDuplicate(serialKey)) {
       warnBeep();
       setDupPrompt({
         serial: serialKey,
@@ -419,7 +470,9 @@ export default function App() {
           },
         },
       });
-      flashExistingRow(serialKey);
+      if (localHasSerial(serialKey)) {
+        flashExistingRow(serialKey);
+      }
       setStatus('Duplicate detected — awaiting decision');
       return;
     }
@@ -517,7 +570,22 @@ export default function App() {
       return;
     }
 
-    // Re-check on server just before saving
+    // Early union check (staged OR imported master list)
+    if (isKnownDuplicate(pending.serial)) {
+      warnBeep();
+      setDupPrompt({
+        serial: String(pending.serial).toUpperCase(),
+        matches: findDuplicates(pending.serial),
+        candidate: { pending, qrExtras },
+      });
+      if (localHasSerial(String(pending.serial))) {
+        flashExistingRow(String(pending.serial).toUpperCase());
+      }
+      setStatus('Duplicate detected — awaiting decision');
+      return;
+    }
+
+    // Re-check on server just before saving (catches other devices)
     try {
       const r = await fetch(api(`/exists/${encodeURIComponent(pending.serial)}`));
       if (r.ok) {
@@ -572,6 +640,10 @@ export default function App() {
       setScans((prev) => [{ id: newId, ...rec }, ...prev]);
       setTotalCount(c => c + 1);
 
+      // also register in known set
+      knownSerialsRef.current.add(normalizeSerial(rec.serial));
+      setKnownCount(knownSerialsRef.current.size);
+
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
       setStatus('Saved to staged');
@@ -580,6 +652,10 @@ export default function App() {
       await idbAdd({ payload: rec });
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
       setTotalCount(c => c + 1);
+
+      knownSerialsRef.current.add(normalizeSerial(rec.serial));
+      setKnownCount(knownSerialsRef.current.size);
+
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
       setStatus('Saved locally (offline) — will sync');
@@ -595,17 +671,39 @@ export default function App() {
 
     const serialKey = manualSerial.trim().toUpperCase();
 
-    if (localHasSerial(serialKey)) {
-      if (!confirm('Duplicate detected locally. Save anyway?')) return;
-    } else {
-      try {
-        const r = await fetch(api(`/exists/${encodeURIComponent(serialKey)}`));
-        if (r.ok) {
-          const j = await r.json();
-          if (j?.exists && !confirm('Duplicate exists on server. Save anyway?')) return;
-        }
-      } catch {}
+    // Early union check
+    if (isKnownDuplicate(serialKey)) {
+      warnBeep();
+      setDupPrompt({
+        serial: serialKey,
+        matches: findDuplicates(serialKey),
+        candidate: {
+          pending: {
+            serial: serialKey,
+            raw: serialKey,
+            capturedAt: new Date().toISOString(),
+          },
+          qrExtras: {
+            grade: FIXED_DAMAGED.grade,
+            railType: FIXED_DAMAGED.railType,
+            spec: FIXED_DAMAGED.spec,
+            lengthM: FIXED_DAMAGED.lengthM,
+          },
+        },
+      });
+      if (localHasSerial(serialKey)) flashExistingRow(serialKey);
+      setStatus('Duplicate detected — awaiting decision');
+      return;
     }
+
+    // Optional server check
+    try {
+      const r = await fetch(api(`/exists/${encodeURIComponent(serialKey)}`));
+      if (r.ok) {
+        const j = await r.json();
+        if (j?.exists && !confirm('Duplicate exists on server. Save anyway?')) return;
+      }
+    } catch {}
 
     const rec = {
       serial: serialKey,
@@ -638,6 +736,9 @@ export default function App() {
       setScans((prev) => [{ id: newId, ...rec }, ...prev ]);
       setTotalCount((c) => c + 1);
 
+      knownSerialsRef.current.add(normalizeSerial(rec.serial));
+      setKnownCount(knownSerialsRef.current.size);
+
       setManualSerial('');
       setShowDamaged(false);
       setStatus('Damaged QR saved');
@@ -646,6 +747,10 @@ export default function App() {
       await idbAdd({ payload: rec });
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev ]);
       setTotalCount((c) => c + 1);
+
+      knownSerialsRef.current.add(normalizeSerial(rec.serial));
+      setKnownCount(knownSerialsRef.current.size);
+
       setManualSerial('');
       setShowDamaged(false);
       setStatus('Damaged QR saved locally (offline) — will sync');
@@ -732,7 +837,7 @@ export default function App() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div className="logo" />
             <div>
-              <div className="title">Rail Inventory</div>
+              <div className="title">Rail Inventory{knownBadge}</div>
               <div className="status">{status}</div>
             </div>
           </div>
@@ -742,6 +847,19 @@ export default function App() {
             <button className="btn" onClick={enableSound}>
               {soundOn ? '🔊 Sound On' : '🔈 Enable Sound'}
             </button>
+            <button className="btn btn-outline" onClick={() => importInputRef.current?.click()}>
+              Import Known Serials
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleImportKnown(f);
+              }}
+            />
           </div>
         </div>
       </header>

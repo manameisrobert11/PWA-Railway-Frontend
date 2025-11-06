@@ -12,14 +12,6 @@ const api = (p) => {
   return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
 };
 
-// Append ?sheet=... to an API path (or &sheet if it already has a query)
-const apiWithSheet = (p, sheet) => {
-  const path = p.startsWith('/') ? p : `/${p}`;
-  const base = API_BASE ? `${API_BASE}${path}` : `/api${path}`;
-  const sep = base.includes('?') ? '&' : '?';
-  return `${base}${sep}sheet=${encodeURIComponent(sheet)}`;
-};
-
 // ---- Fixed values for Damaged QR ----
 const FIXED_DAMAGED = {
   grade: 'SAR48',
@@ -120,15 +112,13 @@ export default function App() {
   const [scans, setScans] = useState([]);
   const [showStart, setShowStart] = useState(true);
 
-  const [activeSheet, setActiveSheet] = useState('main'); // NEW: which workspace we're in
-
   const [operator, setOperator] = useState('Clerk A');
   const [wagonId1, setWagonId1] = useState('');
   const [wagonId2, setWagonId2] = useState('');
   const [wagonId3, setWagonId3] = useState('');
   const [receivedAt, setReceivedAt] = useState('');
   const [loadedAt] = useState('WalvisBay'); // static as requested
-  const [destination, setDestination] = useState('');
+  const [destination, setDestination] = useState(''); // NEW: destination
 
   const [pending, setPending] = useState(null);
   const [qrExtras, setQrExtras] = useState({ grade: '', railType: '', spec: '', lengthM: '' });
@@ -218,6 +208,7 @@ export default function App() {
       const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
       const set = knownSerialsRef.current;
 
+      // Try common headers; fallback to first column
       const headerCandidates = ['serial', 'Serial', 'SERIAL', 'Serial Number', 'SERIAL_NUMBER', 'SN', 'sn'];
       const firstRow = rows[0] || {};
       let header = Object.keys(firstRow).find((h) => headerCandidates.includes(h)) || null;
@@ -272,58 +263,46 @@ export default function App() {
     return serialSetRef.current.has(key);
   };
 
-  // ---------- load current sheet data ----------
-  const loadFirstPage = async (sheet) => {
-    try {
-      const [countResp, pageResp] = await Promise.all([
-        fetch(apiWithSheet('/staged/count', sheet)),
-        fetch(apiWithSheet(`/staged?limit=${PAGE_SIZE}`, sheet))
-      ]);
-      const countData = await countResp.json().catch(()=>({count:0}));
-      const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
-
-      const normalized = (pageData.rows || []).map((r) => ({
-        ...r,
-        wagonId1: r.wagon1Id ?? r.wagonId1 ?? '',
-        wagonId2: r.wagon2Id ?? r.wagonId2 ?? '',
-        wagonId3: r.wagon3Id ?? r.wagonId3 ?? '',
-        receivedAt: r.receivedAt ?? r.recievedAt ?? '',
-        loadedAt: r.loadedAt ?? '',
-        destination: r.destination ?? r.dest ?? '',
-      }));
-
-      setScans(normalized);
-      setTotalCount(countData.count ?? pageData.total ?? 0);
-      setNextCursor(pageData.nextCursor ?? null);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  // initial load for default sheet
-  useEffect(() => { loadFirstPage(activeSheet); /* eslint-disable-next-line */ }, []);
-
-  // reload when switching sheets
+  // initial load: total count + first page
   useEffect(() => {
-    // clear in-memory
-    knownSerialsRef.current = new Set();
-    setKnownCount(0);
-    setScans([]);
-    setNextCursor(null);
-    setTotalCount(0);
-    loadFirstPage(activeSheet);
-  }, [activeSheet]);
+    (async () => {
+      try {
+        const [countResp, pageResp] = await Promise.all([
+          fetch(api('/staged/count')),
+          fetch(api(`/staged?limit=${PAGE_SIZE}`))
+        ]);
+        const countData = await countResp.json().catch(()=>({count:0}));
+        const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
+
+        const normalized = (pageData.rows || []).map((r) => ({
+          ...r,
+          wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
+          wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
+          wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
+          receivedAt: r.receivedAt ?? r.recievedAt ?? '',
+          loadedAt: r.loadedAt ?? '',
+          destination: r.destination ?? r.dest ?? '',
+        }));
+
+        setScans(normalized);
+        setTotalCount(countData.count ?? pageData.total ?? 0);
+        setNextCursor(pageData.nextCursor ?? null);
+      } catch (e) {
+        console.error(e);
+      }
+    })();
+  }, []);
 
   const loadMore = async () => {
     if (!nextCursor) return;
-    const resp = await fetch(apiWithSheet(`/staged?limit=${PAGE_SIZE}&cursor=${nextCursor}`, activeSheet));
+    const resp = await fetch(api(`/staged?limit=${PAGE_SIZE}&cursor=${nextCursor}`));
     const data = await resp.json().catch(()=>({rows:[], nextCursor:null}));
 
     const more = (data.rows || []).map((r) => ({
       ...r,
-      wagonId1: r.wagon1Id ?? r.wagonId1 ?? '',
-      wagonId2: r.wagon2Id ?? r.wagonId2 ?? '',
-      wagonId3: r.wagon3Id ?? r.wagonId3 ?? '',
+      wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
+      wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
+      wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
       receivedAt: r.receivedAt ?? r.recievedAt ?? '',
       loadedAt: r.loadedAt ?? '',
       destination: r.destination ?? r.dest ?? '',
@@ -333,50 +312,37 @@ export default function App() {
     setNextCursor(data.nextCursor ?? null);
   };
 
-  // Auto-sync offline queue when online (sheet-aware)
+  // Auto-sync offline queue when online
   useEffect(() => {
     async function flushQueue() {
       try {
         const items = await idbAll();
         if (items.length === 0) return;
-
-        // Partition per-sheet to avoid mixing
-        const bySheet = new Map();
-        for (const it of items) {
-          const s = (it.payload?.sheet || 'main').toLowerCase();
-          if (!bySheet.has(s)) bySheet.set(s, []);
-          bySheet.get(s).push(it);
-        }
-
-        for (const [sheet, group] of bySheet.entries()) {
-          const payload = group.map(x => x.payload);
-          const resp = await fetch(apiWithSheet('/scans/bulk', sheet), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ items: payload })
-          });
-          if (resp.ok) {
-            await idbClear(group.map(x => x.id));
-            if (sheet === activeSheet) {
-              setTotalCount(c => c + payload.length);
-              try {
-                const pageResp = await fetch(apiWithSheet(`/staged?limit=${PAGE_SIZE}`, activeSheet));
-                const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
-                const normalized = (pageData.rows || []).map((r) => ({
-                  ...r,
-                  wagonId1: r.wagon1Id ?? r.wagonId1 ?? '',
-                  wagonId2: r.wagon2Id ?? r.wagonId2 ?? '',
-                  wagonId3: r.wagon3Id ?? r.wagonId3 ?? '',
-                  receivedAt: r.receivedAt ?? r.recievedAt ?? '',
-                  loadedAt: r.loadedAt ?? '',
-                  destination: r.destination ?? r.dest ?? '',
-                }));
-                setScans(normalized);
-                setNextCursor(pageData.nextCursor ?? null);
-                setTotalCount(pageData.total ?? normalized.length);
-              } catch {}
-            }
-          }
+        const payload = items.map(x => x.payload);
+        const resp = await fetch(api('/scans/bulk'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: payload })
+        });
+        if (resp.ok) {
+          await idbClear(items.map(x => x.id));
+          setTotalCount(c => c + payload.length);
+          try {
+            const pageResp = await fetch(api(`/staged?limit=${PAGE_SIZE}`));
+            const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
+            const normalized = (pageData.rows || []).map((r) => ({
+              ...r,
+              wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
+              wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
+              wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
+              receivedAt: r.receivedAt ?? r.recievedAt ?? '',
+              loadedAt: r.loadedAt ?? '',
+              destination: r.destination ?? r.dest ?? '',
+            }));
+            setScans(normalized);
+            setNextCursor(pageData.nextCursor ?? null);
+            setTotalCount(pageData.total ?? normalized.length);
+          } catch {}
         }
       } catch (e) {
         console.warn('Offline queue flush failed:', e.message);
@@ -386,7 +352,7 @@ export default function App() {
     window.addEventListener('online', flushQueue);
     flushQueue();
     return () => window.removeEventListener('online', flushQueue);
-  }, [activeSheet]);
+  }, []);
 
   // Live sync via shared Socket.IO client
   useEffect(() => {
@@ -395,7 +361,6 @@ export default function App() {
 
     const onNew = (row) => {
       if (!row) return;
-      if (row.sheet !== activeSheet) return; // ignore other workspaces
       setScans((prev) => {
         const hasId = row.id != null && prev.some((x) => String(x.id) === String(row.id));
         const hasSerial = row.serial && prev.some((x) =>
@@ -410,8 +375,7 @@ export default function App() {
       setTotalCount((c) => c + 1);
     };
 
-    const onDeleted = ({ id, sheet }) => {
-      if (sheet && sheet !== activeSheet) return;
+    const onDeleted = ({ id }) => {
       if (id == null) return;
       setScans((prev) => {
         const before = prev.length;
@@ -424,8 +388,7 @@ export default function App() {
       });
     };
 
-    const onCleared = ({ sheet }) => {
-      if (sheet && sheet !== activeSheet) return;
+    const onCleared = () => {
       setScans([]);
       setTotalCount(0);
       setNextCursor(null);
@@ -454,7 +417,7 @@ export default function App() {
       } catch {}
       socketRef.current = null;
     };
-  }, [activeSheet]);
+  }, []);
 
   const scanSerialSet = useMemo(() => {
     const s = new Set();
@@ -487,7 +450,7 @@ export default function App() {
     }
     lastHitRef.current = { serial: serialKey, at: now };
 
-    // 1) INSTANT union check (in-memory + imported)
+    // 1) INSTANT union check: staged OR imported master list
     if (isKnownDuplicate(serialKey)) {
       warnBeep();
       setDupPrompt({
@@ -514,9 +477,9 @@ export default function App() {
       return;
     }
 
-    // 2) Server check for current sheet
+    // 2) Optional server check to catch other devices (ignore if 404/disabled)
     try {
-      const resp = await fetch(apiWithSheet(`/exists/${encodeURIComponent(serialKey)}`, activeSheet));
+      const resp = await fetch(api(`/exists/${encodeURIComponent(serialKey)}`));
       if (resp.ok) {
         const info = await resp.json();
         if (info?.exists) {
@@ -545,7 +508,9 @@ export default function App() {
           return;
         }
       }
-    } catch {}
+    } catch {
+      // ignore network errors; proceed based on local knowledge
+    }
 
     // 3) Not a duplicate — proceed
     okBeep();
@@ -582,7 +547,7 @@ export default function App() {
   const confirmRemoveScan = async () => {
     if (!removePrompt) return;
     try {
-      const resp = await fetch(apiWithSheet(`/staged/${removePrompt}`, activeSheet), { method: 'DELETE' });
+      const resp = await fetch(api(`/staged/${removePrompt}`), { method: 'DELETE' });
       if (!resp.ok) {
         const errText = await resp.text().catch(() => '');
         throw new Error(errText || 'Failed to remove scan');
@@ -605,7 +570,7 @@ export default function App() {
       return;
     }
 
-    // Early union check
+    // Early union check (staged OR imported master list)
     if (isKnownDuplicate(pending.serial)) {
       warnBeep();
       setDupPrompt({
@@ -620,9 +585,9 @@ export default function App() {
       return;
     }
 
-    // Re-check on server just before saving (current sheet)
+    // Re-check on server just before saving (catches other devices)
     try {
-      const r = await fetch(apiWithSheet(`/exists/${encodeURIComponent(pending.serial)}`, activeSheet));
+      const r = await fetch(api(`/exists/${encodeURIComponent(pending.serial)}`));
       if (r.ok) {
         const j = await r.json();
         if (j?.exists) {
@@ -642,7 +607,6 @@ export default function App() {
     } catch {}
 
     const rec = {
-      sheet: activeSheet, // NEW
       serial: String(pending.serial).trim(),
       stage: 'received',
       operator,
@@ -661,7 +625,7 @@ export default function App() {
     };
 
     try {
-      const resp = await fetch(apiWithSheet('/scan', activeSheet), {
+      const resp = await fetch(api('/scan'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rec),
@@ -734,7 +698,7 @@ export default function App() {
 
     // Optional server check
     try {
-      const r = await fetch(apiWithSheet(`/exists/${encodeURIComponent(serialKey)}`, activeSheet));
+      const r = await fetch(api(`/exists/${encodeURIComponent(serialKey)}`));
       if (r.ok) {
         const j = await r.json();
         if (j?.exists && !confirm('Duplicate exists on server. Save anyway?')) return;
@@ -742,7 +706,6 @@ export default function App() {
     } catch {}
 
     const rec = {
-      sheet: activeSheet, // NEW
       serial: serialKey,
       stage: 'received',
       operator,
@@ -761,7 +724,7 @@ export default function App() {
     };
 
     try {
-      const resp = await fetch(apiWithSheet('/scan', activeSheet), {
+      const resp = await fetch(api('/scan'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rec),
@@ -795,17 +758,16 @@ export default function App() {
     }
   };
 
-  const exportToExcel = async (sheetOverride) => {
-    const s = sheetOverride || activeSheet;
+  const exportToExcel = async () => {
     try {
-      const resp = await fetch(apiWithSheet('/export-to-excel', s), { method: 'POST' });
+      const resp = await fetch(api('/export-to-excel'), { method: 'POST' });
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
         throw new Error(text || `HTTP ${resp.status}`);
       }
       const dispo = resp.headers.get('Content-Disposition') || '';
       const match = dispo.match(/filename="?([^"]+)"?/i);
-      const filename = match?.[1] || `Master_${s}_${Date.now()}.xlsm`;
+      const filename = match?.[1] || `Master_${Date.now()}.xlsm`;
 
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
@@ -826,14 +788,14 @@ export default function App() {
 
   const exportXlsxWithImages = async () => {
     try {
-      const resp = await fetch(apiWithSheet('/export-xlsx-images', activeSheet), { method: 'POST' });
+      const resp = await fetch(api('/export-xlsx-images'), { method: 'POST' });
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
         throw new Error(text || `HTTP ${resp.status}`);
       }
       const dispo = resp.headers.get('Content-Disposition') || '';
       const match = dispo.match(/filename="?([^"]+)"?/i);
-      const filename = match?.[1] || `Master_QR_${activeSheet}_${Date.now()}.xlsx`;
+      const filename = match?.[1] || `Master_QR_${Date.now()}.xlsx`;
 
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
@@ -858,8 +820,8 @@ export default function App() {
       <div style={{ minHeight: '100vh', background: '#fff' }}>
         <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
           <StartPage
-            onContinue={(sheet) => { setActiveSheet(sheet || 'main'); setShowStart(false); }}
-            onExport={(sheet) => exportToExcel(sheet || 'main')}
+            onContinue={() => setShowStart(false)}
+            onExport={exportToExcel}
             operator={operator}
             setOperator={setOperator}
           />
@@ -875,10 +837,7 @@ export default function App() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div className="logo" />
             <div>
-              <div className="title">
-                Rail Inventory — <span style={{ color: 'var(--accent)' }}>{activeSheet}</span>
-                {knownBadge}
-              </div>
+              <div className="title">Rail Inventory{knownBadge}</div>
               <div className="status">{status}</div>
             </div>
           </div>
@@ -971,6 +930,7 @@ export default function App() {
               <input className="input" value={loadedAt} readOnly />
             </div>
 
+            {/* NEW: Destination */}
             <div>
               <label className="status">Destination</label>
               <input
@@ -1007,7 +967,7 @@ export default function App() {
             >
               Discard
             </button>
-            <button className="btn" onClick={() => exportToExcel(activeSheet)}>Export to Excel</button>
+            <button className="btn" onClick={exportToExcel}>Export to Excel</button>
             <button className="btn" onClick={exportXlsxWithImages}>Export XLSX (with QR images)</button>
           </div>
 
@@ -1027,6 +987,46 @@ export default function App() {
                 <div className="status" style={{ marginBottom: 8 }}>
                   Enter details when the QR is damaged and cannot be scanned.
                 </div>
+
+                {/* NEW: Wagon IDs inside Damaged QR panel */}
+                <div
+                  style={{
+                    display: 'grid',
+                    gap: 12,
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))'
+                  }}
+                >
+                  <div>
+                    <label className="status">Wagon ID 1</label>
+                    <input
+                      className="input"
+                      value={wagonId1}
+                      onChange={(e) => setWagonId1(e.target.value)}
+                      placeholder="e.g. WGN-0123"
+                    />
+                  </div>
+                  <div>
+                    <label className="status">Wagon ID 2</label>
+                    <input
+                      className="input"
+                      value={wagonId2}
+                      onChange={(e) => setWagonId2(e.target.value)}
+                      placeholder="e.g. WGN-0456"
+                    />
+                  </div>
+                  <div>
+                    <label className="status">Wagon ID 3</label>
+                    <input
+                      className="input"
+                      value={wagonId3}
+                      onChange={(e) => setWagonId3(e.target.value)}
+                      placeholder="e.g. WGN-0789"
+                    />
+                  </div>
+                </div>
+
+                <hr style={{ margin: '14px 0', border: 'none', borderTop: '1px solid var(--border)' }} />
+
                 <div
                   style={{
                     display: 'grid',
@@ -1065,8 +1065,14 @@ export default function App() {
                   </div>
                 </div>
 
-                <div style={{ marginTop: 12 }}>
+                <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <button className="btn" onClick={saveDamaged}>Save Damaged QR</button>
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => { setManualSerial(''); setShowDamaged(false); }}
+                  >
+                    Cancel
+                  </button>
                 </div>
               </div>
             )}

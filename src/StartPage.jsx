@@ -1,9 +1,14 @@
 // StartPage.jsx
 import React, { useEffect, useState } from 'react';
 
-export default function StartPage({ onContinue, onStartScan, onExport, operator, setOperator }) {
+export default function StartPage({
+  onStartMain,
+  onStartAlt,
+  onExportMain,
+  onExportAlt,
+  operator, setOperator,
+}) {
   const [now, setNow] = useState(new Date());
-
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
@@ -13,13 +18,6 @@ export default function StartPage({ onContinue, onStartScan, onExport, operator,
   const dateStr = now.toLocaleDateString(undefined, {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
   });
-
-  // prefer onContinue, fallback to onStartScan for backward-compat
-  const handleStart = () => {
-    const fn = onContinue || onStartScan;
-    if (typeof fn === 'function') fn();
-    else console.warn('StartPage: no onContinue/onStartScan handler provided');
-  };
 
   return (
     <div className="grid" style={{ gap: 20 }}>
@@ -31,9 +29,24 @@ export default function StartPage({ onContinue, onStartScan, onExport, operator,
           {dateStr} • <span style={{ fontVariantNumeric: 'tabular-nums' }}>{timeStr}</span>
         </div>
 
+        {/* two start buttons */}
         <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <button type="button" className="btn" onClick={handleStart}>Start Scanning</button>
-          <button type="button" className="btn btn-outline" onClick={onExport}>Export Excel (.xlsm)</button>
+          <button type="button" className="btn" onClick={() => onStartMain?.()}>
+            Start Scanning (Main)
+          </button>
+          <button type="button" className="btn btn-outline" onClick={() => onStartAlt?.()}>
+            Start Scanning (Alt)
+          </button>
+        </div>
+
+        {/* two export buttons */}
+        <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <button type="button" className="btn btn-outline" onClick={() => onExportMain?.()}>
+            Export Main (.xlsm)
+          </button>
+          <button type="button" className="btn btn-outline" onClick={() => onExportAlt?.()}>
+            Export Alt (.xlsm)
+          </button>
         </div>
       </section>
 

@@ -12,7 +12,7 @@ const api = (p) => {
   return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
 };
 
-// Map per-sheet endpoints in one place
+// Map per-sheet endpoints
 const SHEET_ROUTES = {
   main: {
     scan: '/scan',
@@ -44,7 +44,6 @@ const SHEET_ROUTES = {
   },
 };
 
-// ---- Fixed values for Damaged QR ----
 const FIXED_DAMAGED = {
   grade: 'SAR48',
   railType: 'R260',
@@ -52,7 +51,6 @@ const FIXED_DAMAGED = {
   lengthM: '36 m',
 };
 
-// ---- QR parsing (length/spec/railType; no grade duplication) ----
 function parseQrPayload(raw) {
   const clean = String(raw || '')
     .replace(/[^\x20-\x7E]/g, ' ')
@@ -152,7 +150,7 @@ export default function App() {
   const [wagonId2, setWagonId2] = useState('');
   const [wagonId3, setWagonId3] = useState('');
   const [receivedAt, setReceivedAt] = useState('');
-  const [loadedAt] = useState('WalvisBay'); // static as requested
+  const [loadedAt] = useState('WalvisBay');
   const [destination, setDestination] = useState('');
 
   const [pending, setPending] = useState(null);
@@ -161,12 +159,10 @@ export default function App() {
   const [dupPrompt, setDupPrompt] = useState(null);
   const [removePrompt, setRemovePrompt] = useState(null);
 
-  // pagination + total count
   const [totalCount, setTotalCount] = useState(0);
   const [nextCursor, setNextCursor] = useState(null);
   const PAGE_SIZE = 200;
 
-  // reference to socket (shared)
   const socketRef = useRef(null);
 
   // ------- Web-Audio beeper -------
@@ -220,10 +216,9 @@ export default function App() {
   const [manualSerial, setManualSerial] = useState('');
 
   // ---- FAST duplicate detection helpers ----
-  const serialSetRef = useRef(new Set());            // O(1) for staged membership
-  const lastHitRef = useRef({ serial: '', at: 0 });  // debounce
+  const serialSetRef = useRef(new Set());
+  const lastHitRef = useRef({ serial: '', at: 0 });
 
-  // ---- Known (historical) serials imported from Excel/CSV ----
   const knownSerialsRef = useRef(new Set());
   const [knownCount, setKnownCount] = useState(0);
   const normalizeSerial = (s) => String(s || '').trim().toUpperCase();
@@ -233,7 +228,6 @@ export default function App() {
   };
   const knownBadge = knownCount ? ` • Known: ${knownCount}` : '';
 
-  // Import UI/handler
   const importInputRef = useRef(null);
   const handleImportKnown = async (file) => {
     try {
@@ -272,7 +266,6 @@ export default function App() {
     }
   };
 
-  // --- highlight & scroll the existing staged row on duplicate ---
   const [flashSerial, setFlashSerial] = useState(null);
   const flashExistingRow = (serialKey) => {
     if (!serialKey) return;
@@ -284,7 +277,6 @@ export default function App() {
     setTimeout(() => setFlashSerial(null), 2500);
   };
 
-  // Rebuild fast serial set anytime scans list changes
   useEffect(() => {
     const s = new Set();
     for (const r of scans) if (r?.serial) s.add(String(r.serial).trim().toUpperCase());
@@ -350,18 +342,13 @@ export default function App() {
     setNextCursor(data.nextCursor ?? null);
   };
 
-  // Auto-sync offline queue when online (uses current sheet's bulk route)
+  // Auto-sync offline queue when online (per sheet)
   useEffect(() => {
     async function flushQueue() {
       try {
         const items = await idbAll();
         if (items.length === 0) return;
-
-        // only send items that belong to the current sheet
-        const payload = items
-          .filter(x => x?.sheet === sheet)
-          .map(x => x.payload);
-
+        const payload = items.filter(x => x?.sheet === sheet).map(x => x.payload);
         if (payload.length === 0) return;
 
         const resp = await fetch(api(routes.bulk), {
@@ -370,27 +357,24 @@ export default function App() {
           body: JSON.stringify({ items: payload })
         });
         if (resp.ok) {
-          // remove flushed only
           const toRemove = (await idbAll()).filter(x => x.sheet === sheet).map(x => x.id);
           await idbClear(toRemove);
 
-          // refresh list
-          try {
-            const pageResp = await fetch(api(`${routes.staged}?limit=${PAGE_SIZE}`));
-            const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
-            const normalized = (pageData.rows || []).map((r) => ({
-              ...r,
-              wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
-              wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
-              wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
-              receivedAt: r.receivedAt ?? r.recievedAt ?? '',
-              loadedAt: r.loadedAt ?? '',
-              destination: r.destination ?? r.dest ?? '',
-            }));
-            setScans(normalized);
-            setNextCursor(pageData.nextCursor ?? null);
-            setTotalCount(pageData.total ?? normalized.length);
-          } catch {}
+          const pageResp = await fetch(api(`${routes.staged}?limit=${PAGE_SIZE}`));
+          const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
+          const normalized = (pageData.rows || []).map((r) => ({
+            ...r,
+            wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
+            wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
+            wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
+            receivedAt: r.receivedAt ?? r.recievedAt ?? '',
+            loadedAt: r.loadedAt ?? '',
+            destination: r.destination ?? r.dest ?? '',
+          }));
+          setScans(normalized);
+          setNextCursor(pageData.nextCursor ?? null);
+          setTotalCount(pageData.total ?? normalized.length);
+
           setStatus(`Synced ${payload.length} offline ${sheet} scan(s)`);
         }
       } catch (e) {
@@ -404,7 +388,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheet]);
 
-  // Live sync via shared Socket.IO client (per-sheet channels)
+  // Live sync via Socket.IO (per-sheet channels)
   useEffect(() => {
     socketRef.current = socket;
     try { socket.connect(); } catch {}
@@ -453,7 +437,6 @@ export default function App() {
     socket.on('disconnect', onDisconnect);
     socket.io?.on?.('error', onConnectError);
 
-    // subscribe to the current sheet channels
     socket.on(routes.socketNew, onNew);
     socket.on(routes.socketDeleted, onDeleted);
     socket.on(routes.socketCleared, onCleared);
@@ -463,7 +446,6 @@ export default function App() {
         socket.off('connect', onConnect);
         socket.off('disconnect', onDisconnect);
         socket.io?.off?.('error', onConnectError);
-
         socket.off(routes.socketNew, onNew);
         socket.off(routes.socketDeleted, onDeleted);
         socket.off(routes.socketCleared, onCleared);
@@ -473,38 +455,27 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheet]);
 
-  const scanSerialSet = useMemo(() => {
-    const s = new Set();
-    for (const r of scans) if (r?.serial) s.add(String(r.serial).trim().toUpperCase());
-    return s;
-  }, [scans]);
-
   const findDuplicates = (serial) => {
     const key = String(serial || '').trim().toUpperCase();
     if (!key) return [];
     return scans.filter((r) => String(r.serial || '').trim().toUpperCase() === key);
   };
 
-  // ---- Scan handler with INSTANT duplicate detection
   const onDetected = async (rawText) => {
     const parsed = parseQrPayload(rawText);
     const serial = (parsed.serial || rawText || '').trim();
     const serialKey = serial.toUpperCase();
-
     if (!serialKey) {
       warnBeep();
       setStatus('Scan had no detectable serial');
       return;
     }
-
-    // debounce identical frames for 1.2s
     const now = Date.now();
     if (lastHitRef.current.serial === serialKey && now - lastHitRef.current.at < 1200) {
       return;
     }
     lastHitRef.current = { serial: serialKey, at: now };
 
-    // 1) instant union check
     if (isKnownDuplicate(serialKey)) {
       warnBeep();
       setDupPrompt({
@@ -524,14 +495,11 @@ export default function App() {
           },
         },
       });
-      if (localHasSerial(serialKey)) {
-        flashExistingRow(serialKey);
-      }
+      if (localHasSerial(serialKey)) flashExistingRow(serialKey);
       setStatus('Duplicate detected — awaiting decision');
       return;
     }
 
-    // 2) Optional server check (safe if endpoint missing)
     try {
       const resp = await fetch(api(routes.exists(serialKey)));
       if (resp.ok) {
@@ -555,18 +523,13 @@ export default function App() {
               },
             },
           });
-          if (localHasSerial(serialKey)) {
-            flashExistingRow(serialKey);
-          }
+          if (localHasSerial(serialKey)) flashExistingRow(serialKey);
           setStatus('Duplicate detected — awaiting decision');
           return;
         }
       }
-    } catch {
-      // ignore; proceed based on local knowledge
-    }
+    } catch {}
 
-    // 3) Not a duplicate — stage it
     okBeep();
     setPending({
       serial: serialKey,
@@ -623,8 +586,6 @@ export default function App() {
       alert('Nothing to save yet. Scan a code first. If QR is damaged, use the Damaged QR dropdown.');
       return;
     }
-
-    // union check again before saving
     if (isKnownDuplicate(pending.serial)) {
       warnBeep();
       setDupPrompt({
@@ -632,14 +593,10 @@ export default function App() {
         matches: findDuplicates(pending.serial),
         candidate: { pending, qrExtras },
       });
-      if (localHasSerial(String(pending.serial))) {
-        flashExistingRow(String(pending.serial).toUpperCase());
-      }
       setStatus('Duplicate detected — awaiting decision');
       return;
     }
 
-    // optional server check
     try {
       const r = await fetch(api(routes.exists(pending.serial)));
       if (r.ok) {
@@ -651,9 +608,6 @@ export default function App() {
             matches: [j.row || { serial: pending.serial }],
             candidate: { pending, qrExtras },
           });
-          if (localHasSerial(String(pending.serial))) {
-            flashExistingRow(String(pending.serial).toUpperCase());
-          }
           setStatus('Duplicate detected — awaiting decision');
           return;
         }
@@ -684,10 +638,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rec),
       });
-
-      let data = null;
-      try { data = await resp.json(); } catch {}
-
+      const data = await resp.json().catch(()=>null);
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
       const newId = data?.id || Date.now();
@@ -724,7 +675,6 @@ export default function App() {
 
     const serialKey = manualSerial.trim().toUpperCase();
 
-    // union check
     if (isKnownDuplicate(serialKey)) {
       warnBeep();
       setDupPrompt({
@@ -744,12 +694,10 @@ export default function App() {
           },
         },
       });
-      if (localHasSerial(serialKey)) flashExistingRow(serialKey);
       setStatus('Duplicate detected — awaiting decision');
       return;
     }
 
-    // optional server check
     try {
       const r = await fetch(api(routes.exists(serialKey)));
       if (r.ok) {
@@ -868,7 +816,6 @@ export default function App() {
     }
   };
 
-  // ---------- RENDER ----------
   if (showStart) {
     return (
       <div style={{ minHeight: '100vh', background: '#fff' }}>
@@ -924,7 +871,6 @@ export default function App() {
       </header>
 
       <div className="grid" style={{ marginTop: 20 }}>
-        {/* Scanner */}
         <section className="card">
           <div
             style={{
@@ -936,8 +882,6 @@ export default function App() {
             }}
           >
             <h3 style={{ margin: 0 }}>Scanner</h3>
-
-            {/* Quick action so you don't have to scroll */}
             <button
               className="btn"
               onClick={confirmPending}
@@ -958,7 +902,6 @@ export default function App() {
           )}
         </section>
 
-        {/* Controls */}
         <section className="card">
           <h3>Controls</h3>
           <div className="controls-grid" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
@@ -1029,7 +972,6 @@ export default function App() {
             <button className="btn" onClick={exportXlsxWithImages}>Export XLSX (with QR images)</button>
           </div>
 
-          {/* Damaged QR dropdown */}
           <div style={{ marginTop: 16 }}>
             <button
               className="btn btn-outline"
@@ -1062,7 +1004,6 @@ export default function App() {
                     />
                   </div>
 
-                  {/* Allow manual wagon IDs on damaged entry */}
                   <div>
                     <label className="status">Wagon ID 1</label>
                     <input className="input" value={wagonId1} onChange={(e) => setWagonId1(e.target.value)} placeholder="e.g. WGN-0123" />
@@ -1105,7 +1046,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* Staged Scans */}
         <section className="card">
           <h3>Staged Scans ({totalCount})</h3>
           <div className="list">
@@ -1168,7 +1108,6 @@ export default function App() {
         </div>
       </footer>
 
-      {/* Remove confirmation */}
       {removePrompt && (
         <div
           role="dialog"
@@ -1191,7 +1130,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Duplicate modal */}
       {dupPrompt && (
         <div
           role="dialog"

@@ -1,12 +1,7 @@
 // StartPage.jsx
 import React, { useEffect, useState } from 'react';
 
-export default function StartPage({
-  onContinue,          // expect (sheet) => void
-  onStartScan,         // legacy fallback
-  onExport,            // expect (sheet) => void
-  operator, setOperator,
-}) {
+export default function StartPage({ onContinue, onStartScan, onExport, operator, setOperator }) {
   const [now, setNow] = useState(new Date());
 
   useEffect(() => {
@@ -19,9 +14,10 @@ export default function StartPage({
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
   });
 
-  const go = (sheet) => {
+  // prefer onContinue, fallback to onStartScan for backward-compat
+  const handleStart = () => {
     const fn = onContinue || onStartScan;
-    if (typeof fn === 'function') fn(sheet);
+    if (typeof fn === 'function') fn();
     else console.warn('StartPage: no onContinue/onStartScan handler provided');
   };
 
@@ -35,24 +31,9 @@ export default function StartPage({
           {dateStr} • <span style={{ fontVariantNumeric: 'tabular-nums' }}>{timeStr}</span>
         </div>
 
-        {/* Main sheet */}
         <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <button type="button" className="btn" onClick={() => go('main')}>
-            Start Scanning (Main)
-          </button>
-          <button type="button" className="btn btn-outline" onClick={() => onExport?.('main')}>
-            Export Main (.xlsm)
-          </button>
-        </div>
-
-        {/* Alt sheet */}
-        <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <button type="button" className="btn" onClick={() => go('alt')}>
-            Scan to Different Excel (Alt)
-          </button>
-          <button type="button" className="btn btn-outline" onClick={() => onExport?.('alt')}>
-            Export Alt (.xlsm)
-          </button>
+          <button type="button" className="btn" onClick={handleStart}>Start Scanning</button>
+          <button type="button" className="btn btn-outline" onClick={onExport}>Export Excel (.xlsm)</button>
         </div>
       </section>
 
@@ -68,7 +49,7 @@ export default function StartPage({
           />
         </div>
         <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)' }}>
-          Tip: Pick <strong>Main</strong> vs <strong>Alt</strong> before scanning. They are kept completely separate.
+          Tip: Set the operator here before you begin scanning.
         </p>
       </section>
     </div>

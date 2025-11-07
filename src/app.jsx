@@ -12,6 +12,38 @@ const api = (p) => {
   return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
 };
 
+// Map per-sheet endpoints in one place
+const SHEET_ROUTES = {
+  main: {
+    scan: '/scan',
+    bulk: '/scans/bulk',
+    staged: '/staged',
+    stagedCount: '/staged/count',
+    stagedDelete: (id) => `/staged/${id}`,
+    stagedClear: '/staged/clear',
+    exists: (serial) => `/exists/${encodeURIComponent(serial)}`,
+    exportXlsm: '/export-to-excel',
+    exportXlsxQR: '/export-xlsx-images',
+    socketNew: 'new-scan',
+    socketDeleted: 'deleted-scan',
+    socketCleared: 'cleared-scans',
+  },
+  alt: {
+    scan: '/scan-alt',
+    bulk: '/scans-alt/bulk',
+    staged: '/staged-alt',
+    stagedCount: '/staged-alt/count',
+    stagedDelete: (id) => `/staged-alt/${id}`,
+    stagedClear: '/staged-alt/clear',
+    exists: (serial) => `/exists-alt/${encodeURIComponent(serial)}`,
+    exportXlsm: '/export-alt-to-excel',
+    exportXlsxQR: '/export-alt-xlsx-images',
+    socketNew: 'new-scan-alt',
+    socketDeleted: 'deleted-scan-alt',
+    socketCleared: 'cleared-scans-alt',
+  },
+};
+
 // ---- Fixed values for Damaged QR ----
 const FIXED_DAMAGED = {
   grade: 'SAR48',
@@ -112,8 +144,8 @@ export default function App() {
   const [scans, setScans] = useState([]);
   const [showStart, setShowStart] = useState(true);
 
-  // NEW: active sheet (main | alt)
-  const [sheet, setSheet] = useState('main');
+  const [sheet, setSheet] = useState('main'); // 'main' | 'alt'
+  const routes = SHEET_ROUTES[sheet];
 
   const [operator, setOperator] = useState('Clerk A');
   const [wagonId1, setWagonId1] = useState('');
@@ -121,7 +153,7 @@ export default function App() {
   const [wagonId3, setWagonId3] = useState('');
   const [receivedAt, setReceivedAt] = useState('');
   const [loadedAt] = useState('WalvisBay'); // static as requested
-  const [destination, setDestination] = useState(''); // destination
+  const [destination, setDestination] = useState('');
 
   const [pending, setPending] = useState(null);
   const [qrExtras, setQrExtras] = useState({ grade: '', railType: '', spec: '', lengthM: '' });
@@ -137,7 +169,7 @@ export default function App() {
   // reference to socket (shared)
   const socketRef = useRef(null);
 
-  // ------- Web-Audio beeper (user-gesture unlock) -------
+  // ------- Web-Audio beeper -------
   const audioCtxRef = useRef(null);
   const [soundOn, setSoundOn] = useState(false);
 
@@ -191,7 +223,7 @@ export default function App() {
   const serialSetRef = useRef(new Set());            // O(1) for staged membership
   const lastHitRef = useRef({ serial: '', at: 0 });  // debounce
 
-  // ---- Known (historical) serials imported from Excel/CSV, sheet-local ----
+  // ---- Known (historical) serials imported from Excel/CSV ----
   const knownSerialsRef = useRef(new Set());
   const [knownCount, setKnownCount] = useState(0);
   const normalizeSerial = (s) => String(s || '').trim().toUpperCase();
@@ -201,7 +233,7 @@ export default function App() {
   };
   const knownBadge = knownCount ? ` • Known: ${knownCount}` : '';
 
-  // Import UI/handler (sheet-local set)
+  // Import UI/handler
   const importInputRef = useRef(null);
   const handleImportKnown = async (file) => {
     try {
@@ -211,7 +243,6 @@ export default function App() {
       const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
       const set = knownSerialsRef.current;
 
-      // Try common headers; fallback to first column
       const headerCandidates = ['serial', 'Serial', 'SERIAL', 'Serial Number', 'SERIAL_NUMBER', 'SN', 'sn'];
       const firstRow = rows[0] || {};
       let header = Object.keys(firstRow).find((h) => headerCandidates.includes(h)) || null;
@@ -230,7 +261,7 @@ export default function App() {
       }
 
       setKnownCount(set.size);
-      setStatus(`Imported known serials (${sheet}): ${set.size}`);
+      setStatus(`Imported known serials: ${set.size}`);
       savedBeep();
     } catch (e) {
       console.error(e);
@@ -266,44 +297,46 @@ export default function App() {
     return serialSetRef.current.has(key);
   };
 
-  // load the first page for the current sheet
-  const fetchFirstPage = async (activeSheet) => {
-    try {
-      const [countResp, pageResp] = await Promise.all([
-        fetch(api(`/staged/count?sheet=${encodeURIComponent(activeSheet)}`)),
-        fetch(api(`/staged?sheet=${encodeURIComponent(activeSheet)}&limit=${PAGE_SIZE}`))
-      ]);
-      const countData = await countResp.json().catch(()=>({count:0}));
-      const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
+  // --------- load page based on selected sheet ---------
+  useEffect(() => {
+    (async () => {
+      try {
+        const [countResp, pageResp] = await Promise.all([
+          fetch(api(routes.stagedCount)),
+          fetch(api(`${routes.staged}?limit=${PAGE_SIZE}`)),
+        ]);
+        const countData = await countResp.json().catch(()=>({count:0}));
+        const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
 
-      const normalized = (pageData.rows || []).map((r) => ({
-        ...r,
-        wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
-        wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
-        wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
-        receivedAt: r.receivedAt ?? r.recievedAt ?? '',
-        loadedAt: r.loadedAt ?? '',
-        destination: r.destination ?? r.dest ?? '',
-      }));
+        const normalized = (pageData.rows || []).map((r) => ({
+          ...r,
+          wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
+          wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
+          wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
+          receivedAt: r.receivedAt ?? r.recievedAt ?? '',
+          loadedAt: r.loadedAt ?? '',
+          destination: r.destination ?? r.dest ?? '',
+        }));
 
-      setScans(normalized);
-      setTotalCount(countData.count ?? pageData.total ?? 0);
-      setNextCursor(pageData.nextCursor ?? null);
-      // clear known set when switching sheets (sheet-local duplicate memory)
-      knownSerialsRef.current = new Set();
-      setKnownCount(0);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  useEffect(() => { fetchFirstPage(sheet); }, [sheet]);
+        setScans(normalized);
+        setTotalCount(countData.count ?? pageData.total ?? 0);
+        setNextCursor(pageData.nextCursor ?? null);
+        setStatus(`Loaded ${sheet.toUpperCase()} sheet`);
+      } catch (e) {
+        console.error(e);
+        setScans([]);
+        setTotalCount(0);
+        setNextCursor(null);
+        setStatus(`Failed to load ${sheet} sheet`);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheet]);
 
   const loadMore = async () => {
     if (!nextCursor) return;
-    const resp = await fetch(api(`/staged?sheet=${encodeURIComponent(sheet)}&limit=${PAGE_SIZE}&cursor=${nextCursor}`));
+    const resp = await fetch(api(`${routes.staged}?limit=${PAGE_SIZE}&cursor=${nextCursor}`));
     const data = await resp.json().catch(()=>({rows:[], nextCursor:null}));
-
     const more = (data.rows || []).map((r) => ({
       ...r,
       wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
@@ -313,27 +346,52 @@ export default function App() {
       loadedAt: r.loadedAt ?? '',
       destination: r.destination ?? r.dest ?? '',
     }));
-
     setScans(prev => [...prev, ...more]);
     setNextCursor(data.nextCursor ?? null);
   };
 
-  // Auto-sync offline queue when online (bulk honors sheet from payload)
+  // Auto-sync offline queue when online (uses current sheet's bulk route)
   useEffect(() => {
     async function flushQueue() {
       try {
         const items = await idbAll();
         if (items.length === 0) return;
-        const payload = items.map(x => x.payload);
-        const resp = await fetch(api('/scans/bulk'), {
+
+        // only send items that belong to the current sheet
+        const payload = items
+          .filter(x => x?.sheet === sheet)
+          .map(x => x.payload);
+
+        if (payload.length === 0) return;
+
+        const resp = await fetch(api(routes.bulk), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ items: payload })
         });
         if (resp.ok) {
-          await idbClear(items.map(x => x.id));
-          // Refresh the current sheet listing
-          fetchFirstPage(sheet);
+          // remove flushed only
+          const toRemove = (await idbAll()).filter(x => x.sheet === sheet).map(x => x.id);
+          await idbClear(toRemove);
+
+          // refresh list
+          try {
+            const pageResp = await fetch(api(`${routes.staged}?limit=${PAGE_SIZE}`));
+            const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
+            const normalized = (pageData.rows || []).map((r) => ({
+              ...r,
+              wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
+              wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
+              wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
+              receivedAt: r.receivedAt ?? r.recievedAt ?? '',
+              loadedAt: r.loadedAt ?? '',
+              destination: r.destination ?? r.dest ?? '',
+            }));
+            setScans(normalized);
+            setNextCursor(pageData.nextCursor ?? null);
+            setTotalCount(pageData.total ?? normalized.length);
+          } catch {}
+          setStatus(`Synced ${payload.length} offline ${sheet} scan(s)`);
         }
       } catch (e) {
         console.warn('Offline queue flush failed:', e.message);
@@ -343,16 +401,16 @@ export default function App() {
     window.addEventListener('online', flushQueue);
     flushQueue();
     return () => window.removeEventListener('online', flushQueue);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheet]);
 
-  // Live sync via shared Socket.IO client
+  // Live sync via shared Socket.IO client (per-sheet channels)
   useEffect(() => {
     socketRef.current = socket;
     try { socket.connect(); } catch {}
 
     const onNew = (row) => {
-      // show only if row.sheet matches current sheet
-      if (!row || row.sheet !== sheet) return;
+      if (!row) return;
       setScans((prev) => {
         const hasId = row.id != null && prev.some((x) => String(x.id) === String(row.id));
         const hasSerial = row.serial && prev.some((x) =>
@@ -367,27 +425,24 @@ export default function App() {
       setTotalCount((c) => c + 1);
     };
 
-    const onDeleted = ({ id, sheet: s }) => {
-      if (id == null || s !== sheet) return;
+    const onDeleted = ({ id }) => {
+      if (id == null) return;
       setScans((prev) => {
         const before = prev.length;
         const next = prev.filter((x) => String(x.id) !== String(id));
         if (next.length !== before) {
           setTotalCount((c) => Math.max(0, c - 1));
-          setStatus(`Scan removed (${sheet})`);
+          setStatus('Scan removed (synced)');
         }
         return next;
       });
     };
 
-    const onCleared = (payload) => {
-      // if server sends {sheet}, only clear UI for that sheet
-      const clearedSheet = payload?.sheet || 'main';
-      if (clearedSheet !== sheet) return;
+    const onCleared = () => {
       setScans([]);
       setTotalCount(0);
       setNextCursor(null);
-      setStatus(`All scans cleared (${clearedSheet})`);
+      setStatus('All scans cleared (synced)');
     };
 
     const onConnect = () => setStatus('Live sync connected');
@@ -397,22 +452,32 @@ export default function App() {
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
     socket.io?.on?.('error', onConnectError);
-    socket.on('new-scan', onNew);
-    socket.on('deleted-scan', onDeleted);
-    socket.on('cleared-scans', onCleared);
+
+    // subscribe to the current sheet channels
+    socket.on(routes.socketNew, onNew);
+    socket.on(routes.socketDeleted, onDeleted);
+    socket.on(routes.socketCleared, onCleared);
 
     return () => {
       try {
         socket.off('connect', onConnect);
         socket.off('disconnect', onDisconnect);
         socket.io?.off?.('error', onConnectError);
-        socket.off('new-scan', onNew);
-        socket.off('deleted-scan', onDeleted);
-        socket.off('cleared-scans', onCleared);
+
+        socket.off(routes.socketNew, onNew);
+        socket.off(routes.socketDeleted, onDeleted);
+        socket.off(routes.socketCleared, onCleared);
       } catch {}
       socketRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheet]);
+
+  const scanSerialSet = useMemo(() => {
+    const s = new Set();
+    for (const r of scans) if (r?.serial) s.add(String(r.serial).trim().toUpperCase());
+    return s;
+  }, [scans]);
 
   const findDuplicates = (serial) => {
     const key = String(serial || '').trim().toUpperCase();
@@ -420,7 +485,7 @@ export default function App() {
     return scans.filter((r) => String(r.serial || '').trim().toUpperCase() === key);
   };
 
-  // ---- Scan handler with INSTANT duplicate detection (sheet-local) ----
+  // ---- Scan handler with INSTANT duplicate detection
   const onDetected = async (rawText) => {
     const parsed = parseQrPayload(rawText);
     const serial = (parsed.serial || rawText || '').trim();
@@ -432,14 +497,14 @@ export default function App() {
       return;
     }
 
-    // Debounce identical frames for 1.2s
+    // debounce identical frames for 1.2s
     const now = Date.now();
     if (lastHitRef.current.serial === serialKey && now - lastHitRef.current.at < 1200) {
       return;
     }
     lastHitRef.current = { serial: serialKey, at: now };
 
-    // 1) INSTANT union check (current sheet only)
+    // 1) instant union check
     if (isKnownDuplicate(serialKey)) {
       warnBeep();
       setDupPrompt({
@@ -462,13 +527,13 @@ export default function App() {
       if (localHasSerial(serialKey)) {
         flashExistingRow(serialKey);
       }
-      setStatus(`Duplicate detected (${sheet}) — awaiting decision`);
+      setStatus('Duplicate detected — awaiting decision');
       return;
     }
 
-    // 2) Server check (same sheet)
+    // 2) Optional server check (safe if endpoint missing)
     try {
-      const resp = await fetch(api(`/exists/${encodeURIComponent(serialKey)}?sheet=${encodeURIComponent(sheet)}`));
+      const resp = await fetch(api(routes.exists(serialKey)));
       if (resp.ok) {
         const info = await resp.json();
         if (info?.exists) {
@@ -493,13 +558,15 @@ export default function App() {
           if (localHasSerial(serialKey)) {
             flashExistingRow(serialKey);
           }
-          setStatus(`Duplicate detected (${sheet}) — awaiting decision`);
+          setStatus('Duplicate detected — awaiting decision');
           return;
         }
       }
-    } catch {}
+    } catch {
+      // ignore; proceed based on local knowledge
+    }
 
-    // 3) Not a duplicate — proceed
+    // 3) Not a duplicate — stage it
     okBeep();
     setPending({
       serial: serialKey,
@@ -512,7 +579,7 @@ export default function App() {
       spec: parsed.spec || '',
       lengthM: parsed.lengthM || '',
     });
-    setStatus(`Captured (${sheet}) — review & Confirm`);
+    setStatus('Captured — review & Confirm');
   };
 
   const handleDupDiscard = () => {
@@ -534,8 +601,7 @@ export default function App() {
   const confirmRemoveScan = async () => {
     if (!removePrompt) return;
     try {
-      // sheet-specific delete optional (server emits sheet in payload)
-      const resp = await fetch(api(`/staged/${removePrompt}`), { method: 'DELETE' });
+      const resp = await fetch(api(routes.stagedDelete(removePrompt)), { method: 'DELETE' });
       if (!resp.ok) {
         const errText = await resp.text().catch(() => '');
         throw new Error(errText || 'Failed to remove scan');
@@ -543,7 +609,7 @@ export default function App() {
       setScans((prev) => prev.filter((scan) => scan.id !== removePrompt));
       setTotalCount(c => Math.max(0,  c - 1));
       setRemovePrompt(null);
-      setStatus(`Scan removed (${sheet})`);
+      setStatus('Scan removed successfully');
     } catch (e) {
       console.error(e);
       alert(e.message || 'Failed to remove scan');
@@ -558,7 +624,7 @@ export default function App() {
       return;
     }
 
-    // Early union check (current sheet)
+    // union check again before saving
     if (isKnownDuplicate(pending.serial)) {
       warnBeep();
       setDupPrompt({
@@ -569,13 +635,13 @@ export default function App() {
       if (localHasSerial(String(pending.serial))) {
         flashExistingRow(String(pending.serial).toUpperCase());
       }
-      setStatus(`Duplicate detected (${sheet}) — awaiting decision`);
+      setStatus('Duplicate detected — awaiting decision');
       return;
     }
 
-    // Re-check on server just before saving (same sheet)
+    // optional server check
     try {
-      const r = await fetch(api(`/exists/${encodeURIComponent(pending.serial)}?sheet=${encodeURIComponent(sheet)}`));
+      const r = await fetch(api(routes.exists(pending.serial)));
       if (r.ok) {
         const j = await r.json();
         if (j?.exists) {
@@ -588,14 +654,13 @@ export default function App() {
           if (localHasSerial(String(pending.serial))) {
             flashExistingRow(String(pending.serial).toUpperCase());
           }
-          setStatus(`Duplicate detected (${sheet}) — awaiting decision`);
+          setStatus('Duplicate detected — awaiting decision');
           return;
         }
       }
     } catch {}
 
     const rec = {
-      sheet,                                   // NEW
       serial: String(pending.serial).trim(),
       stage: 'received',
       operator,
@@ -614,7 +679,7 @@ export default function App() {
     };
 
     try {
-      const resp = await fetch(api('/scan'), {
+      const resp = await fetch(api(routes.scan), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rec),
@@ -629,16 +694,15 @@ export default function App() {
       setScans((prev) => [{ id: newId, ...rec }, ...prev]);
       setTotalCount(c => c + 1);
 
-      // also register in known set
       knownSerialsRef.current.add(normalizeSerial(rec.serial));
       setKnownCount(knownSerialsRef.current.size);
 
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
-      setStatus(`Saved to staged (${sheet})`);
+      setStatus(`Saved to ${sheet.toUpperCase()} staged`);
       savedBeep();
     } catch (e) {
-      await idbAdd({ payload: rec });
+      await idbAdd({ payload: rec, sheet });
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
       setTotalCount(c => c + 1);
 
@@ -647,7 +711,7 @@ export default function App() {
 
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
-      setStatus(`Saved locally (${sheet}) — will sync`);
+      setStatus(`Saved locally (offline) — will sync to ${sheet}`);
       savedBeep();
     }
   };
@@ -660,7 +724,7 @@ export default function App() {
 
     const serialKey = manualSerial.trim().toUpperCase();
 
-    // Early union check
+    // union check
     if (isKnownDuplicate(serialKey)) {
       warnBeep();
       setDupPrompt({
@@ -681,21 +745,20 @@ export default function App() {
         },
       });
       if (localHasSerial(serialKey)) flashExistingRow(serialKey);
-      setStatus(`Duplicate detected (${sheet}) — awaiting decision`);
+      setStatus('Duplicate detected — awaiting decision');
       return;
     }
 
-    // Optional server check (same sheet)
+    // optional server check
     try {
-      const r = await fetch(api(`/exists/${encodeURIComponent(serialKey)}?sheet=${encodeURIComponent(sheet)}`));
+      const r = await fetch(api(routes.exists(serialKey)));
       if (r.ok) {
         const j = await r.json();
-        if (j?.exists && !confirm('Duplicate exists on this sheet. Save anyway?')) return;
+        if (j?.exists && !confirm('Duplicate exists on server. Save anyway?')) return;
       }
     } catch {}
 
     const rec = {
-      sheet,
       serial: serialKey,
       stage: 'received',
       operator,
@@ -714,7 +777,7 @@ export default function App() {
     };
 
     try {
-      const resp = await fetch(api('/scan'), {
+      const resp = await fetch(api(routes.scan), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rec),
@@ -731,10 +794,10 @@ export default function App() {
 
       setManualSerial('');
       setShowDamaged(false);
-      setStatus(`Damaged QR saved (${sheet})`);
+      setStatus(`Damaged QR saved to ${sheet.toUpperCase()}`);
       savedBeep();
     } catch (e) {
-      await idbAdd({ payload: rec });
+      await idbAdd({ payload: rec, sheet });
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev ]);
       setTotalCount((c) => c + 1);
 
@@ -743,21 +806,22 @@ export default function App() {
 
       setManualSerial('');
       setShowDamaged(false);
-      setStatus(`Damaged QR saved locally (${sheet}) — will sync`);
+      setStatus(`Damaged QR saved locally (offline) — will sync to ${sheet}`);
       savedBeep();
     }
   };
 
-  const exportToExcel = async (targetSheet) => {
+  const exportToExcel = async (kind = 'main') => {
+    const r = SHEET_ROUTES[kind];
     try {
-      const resp = await fetch(api(`/export-to-excel?sheet=${encodeURIComponent(targetSheet)}`), { method: 'POST' });
+      const resp = await fetch(api(r.exportXlsm), { method: 'POST' });
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
         throw new Error(text || `HTTP ${resp.status}`);
       }
       const dispo = resp.headers.get('Content-Disposition') || '';
       const match = dispo.match(/filename="?([^"]+)"?/i);
-      const filename = match?.[1] || `Master_${targetSheet}_${Date.now()}.xlsm`;
+      const filename = match?.[1] || `${kind === 'alt' ? 'Alt' : 'Master'}_${Date.now()}.xlsm`;
 
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
@@ -771,21 +835,21 @@ export default function App() {
       setStatus(`Exported ${filename}`);
     } catch (e) {
       console.error('Export failed:', e);
-      alert(`Export failed: ${e.message}\n(Ensure uploads/template.xlsm exists on the server)`);
+      alert(`Export failed: ${e.message}`);
       setStatus('Export failed');
     }
   };
 
   const exportXlsxWithImages = async () => {
     try {
-      const resp = await fetch(api(`/export-xlsx-images?sheet=${encodeURIComponent(sheet)}`), { method: 'POST' });
+      const resp = await fetch(api(routes.exportXlsxQR), { method: 'POST' });
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
         throw new Error(text || `HTTP ${resp.status}`);
       }
       const dispo = resp.headers.get('Content-Disposition') || '';
       const match = dispo.match(/filename="?([^"]+)"?/i);
-      const filename = match?.[1] || `Master_QR_${sheet}_${Date.now()}.xlsx`;
+      const filename = match?.[1] || `${sheet === 'alt' ? 'Alt' : 'Master'}_QR_${Date.now()}.xlsx`;
 
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
@@ -804,29 +868,16 @@ export default function App() {
     }
   };
 
-  const clearAltSheet = async () => {
-    if (!confirm('Clear ALL staged scans on ALT sheet? This cannot be undone.')) return;
-    try {
-      const resp = await fetch(api('/staged/clear?sheet=alt'), { method: 'POST' });
-      const j = await resp.json().catch(()=>null);
-      if (!resp.ok) throw new Error(j?.error || `HTTP ${resp.status}`);
-      if (sheet === 'alt') {
-        setScans([]); setTotalCount(0); setNextCursor(null);
-      }
-      setStatus(`Cleared ${j?.cleared ?? 0} rows on ALT`);
-    } catch (e) {
-      alert(`Failed to clear ALT: ${e.message}`);
-    }
-  };
-
   // ---------- RENDER ----------
   if (showStart) {
     return (
       <div style={{ minHeight: '100vh', background: '#fff' }}>
         <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
           <StartPage
-            onStartSheet={(s) => { setSheet(s || 'main'); setShowStart(false); }}
-            onExport={(s) => exportToExcel(s || 'main')}
+            onStartMain={() => { setSheet('main'); setShowStart(false); }}
+            onStartAlt={() => { setSheet('alt'); setShowStart(false); }}
+            onExportMain={() => exportToExcel('main')}
+            onExportAlt={() => exportToExcel('alt')}
             operator={operator}
             setOperator={setOperator}
           />
@@ -842,24 +893,16 @@ export default function App() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div className="logo" />
             <div>
-              <div className="title">Rail Inventory — <span style={{ textTransform: 'uppercase' }}>{sheet}</span> {knownBadge}</div>
+              <div className="title">Rail Inventory — {sheet.toUpperCase()}{knownBadge}</div>
               <div className="status">{status}</div>
             </div>
           </div>
 
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            {/* Sheet switch */}
-            <div className="btn-group" role="group" aria-label="Sheet">
-              <button className={`btn ${sheet==='main'?'':'btn-outline'}`} onClick={() => setSheet('main')}>Main</button>
-              <button className={`btn ${sheet==='alt'?'':'btn-outline'}`} onClick={() => setSheet('alt')}>Alt</button>
-            </div>
-
-            {/* Clear ALT only shows as button for convenience (always safe) */}
-            <button className="btn btn-outline" onClick={clearAltSheet} title="Clear all scans on ALT">
-              Clear ALT sheet
-            </button>
-
             <button className="btn btn-outline" onClick={() => setShowStart(true)}>Back to Start</button>
+            <button className="btn btn-outline" onClick={() => setSheet(s => s === 'main' ? 'alt' : 'main')}>
+              Switch to {sheet === 'main' ? 'ALT' : 'MAIN'}
+            </button>
             <button className="btn" onClick={enableSound}>
               {soundOn ? '🔊 Sound On' : '🔈 Enable Sound'}
             </button>
@@ -892,7 +935,7 @@ export default function App() {
               flexWrap: 'wrap'
             }}
           >
-            <h3 style={{ margin: 0 }}>Scanner ({sheet.toUpperCase()})</h3>
+            <h3 style={{ margin: 0 }}>Scanner</h3>
 
             {/* Quick action so you don't have to scroll */}
             <button
@@ -1002,46 +1045,6 @@ export default function App() {
                 <div className="status" style={{ marginBottom: 8 }}>
                   Enter details when the QR is damaged and cannot be scanned.
                 </div>
-
-                {/* Wagon IDs inside Damaged QR panel */}
-                <div
-                  style={{
-                    display: 'grid',
-                    gap: 12,
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))'
-                  }}
-                >
-                  <div>
-                    <label className="status">Wagon ID 1</label>
-                    <input
-                      className="input"
-                      value={wagonId1}
-                      onChange={(e) => setWagonId1(e.target.value)}
-                      placeholder="e.g. WGN-0123"
-                    />
-                  </div>
-                  <div>
-                    <label className="status">Wagon ID 2</label>
-                    <input
-                      className="input"
-                      value={wagonId2}
-                      onChange={(e) => setWagonId2(e.target.value)}
-                      placeholder="e.g. WGN-0456"
-                    />
-                  </div>
-                  <div>
-                    <label className="status">Wagon ID 3</label>
-                    <input
-                      className="input"
-                      value={wagonId3}
-                      onChange={(e) => setWagonId3(e.target.value)}
-                      placeholder="e.g. WGN-0789"
-                    />
-                  </div>
-                </div>
-
-                <hr style={{ margin: '14px 0', border: 'none', borderTop: '1px solid var(--border)' }} />
-
                 <div
                   style={{
                     display: 'grid',
@@ -1057,6 +1060,20 @@ export default function App() {
                       onChange={(e) => setManualSerial(e.target.value)}
                       placeholder="Enter serial manually"
                     />
+                  </div>
+
+                  {/* Allow manual wagon IDs on damaged entry */}
+                  <div>
+                    <label className="status">Wagon ID 1</label>
+                    <input className="input" value={wagonId1} onChange={(e) => setWagonId1(e.target.value)} placeholder="e.g. WGN-0123" />
+                  </div>
+                  <div>
+                    <label className="status">Wagon ID 2</label>
+                    <input className="input" value={wagonId2} onChange={(e) => setWagonId2(e.target.value)} placeholder="e.g. WGN-0456" />
+                  </div>
+                  <div>
+                    <label className="status">Wagon ID 3</label>
+                    <input className="input" value={wagonId3} onChange={(e) => setWagonId3(e.target.value)} placeholder="e.g. WGN-0789" />
                   </div>
 
                   <div>
@@ -1080,14 +1097,8 @@ export default function App() {
                   </div>
                 </div>
 
-                <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <div style={{ marginTop: 12 }}>
                   <button className="btn" onClick={saveDamaged}>Save Damaged QR</button>
-                  <button
-                    className="btn btn-outline"
-                    onClick={() => { setManualSerial(''); setShowDamaged(false); }}
-                  >
-                    Cancel
-                  </button>
                 </div>
               </div>
             )}
@@ -1193,7 +1204,7 @@ export default function App() {
               <div style={{ flex: 1 }}>
                 <h3 style={{ margin: 0 }}>Duplicate detected</h3>
                 <div className="status" style={{ marginTop: 6 }}>
-                  The serial <strong>{dupPrompt.serial}</strong> already exists in the staged list ({dupPrompt.matches?.length ?? 1}) on the <strong>{sheet.toUpperCase()}</strong> sheet.
+                  The serial <strong>{dupPrompt.serial}</strong> already exists in the staged list ({dupPrompt.matches?.length ?? 1}).
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
                   <button className="btn btn-outline" onClick={handleDupDiscard}>Discard</button>

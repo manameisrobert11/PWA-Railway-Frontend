@@ -1,4 +1,4 @@
-// src/app.jsx
+// src/App.jsx — Main + ALT modes, password-protected clear buttons, separate queues
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { socket } from './socket';
 import Scanner from './scanner/Scanner.jsx';
@@ -6,44 +6,26 @@ import StartPage from './StartPage.jsx';
 import './app.css';
 import * as XLSX from 'xlsx';
 
+// ---------- API base ----------
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const api = (p) => {
   const path = p.startsWith('/') ? p : `/${p}`;
   return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
 };
 
-// Map per-sheet endpoints
-const SHEET_ROUTES = {
-  main: {
-    scan: '/scan',
-    bulk: '/scans/bulk',
-    staged: '/staged',
-    stagedCount: '/staged/count',
-    stagedDelete: (id) => `/staged/${id}`,
-    stagedClear: '/staged/clear',
-    exists: (serial) => `/exists/${encodeURIComponent(serial)}`,
-    exportXlsm: '/export-to-excel',
-    exportXlsxQR: '/export-xlsx-images',
-    socketNew: 'new-scan',
-    socketDeleted: 'deleted-scan',
-    socketCleared: 'cleared-scans',
-  },
-  alt: {
-    scan: '/scan-alt',
-    bulk: '/scans-alt/bulk',
-    staged: '/staged-alt',
-    stagedCount: '/staged-alt/count',
-    stagedDelete: (id) => `/staged-alt/${id}`,
-    stagedClear: '/staged-alt/clear',
-    exists: (serial) => `/exists-alt/${encodeURIComponent(serial)}`,
-    exportXlsm: '/export-alt-to-excel',
-    exportXlsxQR: '/export-alt-xlsx-images',
-    socketNew: 'new-scan-alt',
-    socketDeleted: 'deleted-scan-alt',
-    socketCleared: 'cleared-scans-alt',
-  },
+// ---------- Helpers for per-mode endpoints ----------
+const modeIsAlt = (m) => m === 'alt';
+const endpoints = {
+  staged: (m) => modeIsAlt(m) ? '/staged-alt' : '/staged',
+  stagedCount: (m) => modeIsAlt(m) ? '/staged-alt/count' : '/staged/count',
+  scan: (m) => modeIsAlt(m) ? '/scan-alt' : '/scan',
+  exists: (m, serial) => modeIsAlt(m) ? `/exists-alt/${encodeURIComponent(serial)}` : `/exists/${encodeURIComponent(serial)}`,
+  clearAll: (m) => modeIsAlt(m) ? '/staged-alt/clear' : '/staged/clear',
+  exportXlsm: (m) => modeIsAlt(m) ? '/export-alt-to-excel' : '/export-to-excel',
+  exportXlsxImages: (m) => modeIsAlt(m) ? '/export-alt-xlsx-images' : '/export-xlsx-images',
 };
 
+// ---------- Fixed values for Damaged QR ----------
 const FIXED_DAMAGED = {
   grade: 'SAR48',
   railType: 'R260',
@@ -51,6 +33,7 @@ const FIXED_DAMAGED = {
   lengthM: '36 m',
 };
 
+// ---------- QR parsing ----------
 function parseQrPayload(raw) {
   const clean = String(raw || '')
     .replace(/[^\x20-\x7E]/g, ' ')
@@ -90,61 +73,90 @@ function parseQrPayload(raw) {
   return { raw: clean, serial, grade, railType, spec, lengthM };
 }
 
-// ---- IndexedDB offline queue ----
+// ---------- IndexedDB offline queues (separate stores per mode) ----------
 const DB_NAME = 'rail-offline';
-const DB_VERSION = 1;
-const STORE = 'queue';
+const DB_VERSION = 2;
+const STORE_MAIN = 'queue_main';
+const STORE_ALT = 'queue_alt';
+const storeForMode = (m) => modeIsAlt(m) ? STORE_ALT : STORE_MAIN;
 
 function idbOpen() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
-      if (!db.objectStoreNames.contains(STORE)) {
-        db.createObjectStore(STORE, { keyPath: 'id', autoIncrement: true });
+      if (!db.objectStoreNames.contains(STORE_MAIN)) {
+        db.createObjectStore(STORE_MAIN, { keyPath: 'id', autoIncrement: true });
+      }
+      if (!db.objectStoreNames.contains(STORE_ALT)) {
+        db.createObjectStore(STORE_ALT, { keyPath: 'id', autoIncrement: true });
       }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
-async function idbAdd(item) {
+async function idbAdd(item, mode) {
   const db = await idbOpen();
+  const storeName = storeForMode(mode);
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).add(item);
+    const tx = db.transaction(storeName, 'readwrite');
+    tx.objectStore(storeName).add(item);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
-async function idbAll() {
+async function idbAll(mode) {
   const db = await idbOpen();
+  const storeName = storeForMode(mode);
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readonly');
-    const req = tx.objectStore(STORE).getAll();
+    const tx = db.transaction(storeName, 'readonly');
+    const req = tx.objectStore(storeName).getAll();
     req.onsuccess = () => resolve(req.result || []);
     req.onerror = () => reject(req.error);
   });
 }
-async function idbClear(ids) {
+async function idbClear(ids, mode) {
   const db = await idbOpen();
+  const storeName = storeForMode(mode);
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite');
-    const store = tx.objectStore(STORE);
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
     (ids || []).forEach(id => store.delete(id));
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
 
+// ---------- Component ----------
 export default function App() {
+  // Mode: 'main' | 'alt'
+  const [mode, setMode] = useState('main');
+
   const [status, setStatus] = useState('Ready');
-  const [scans, setScans] = useState([]);
+
+  // MAIN and ALT separate arrays & pagination
+  const [scansMain, setScansMain] = useState([]);
+  const [scansAlt, setScansAlt] = useState([]);
+
+  const [totalMain, setTotalMain] = useState(0);
+  const [totalAlt, setTotalAlt] = useState(0);
+
+  const [cursorMain, setCursorMain] = useState(null);
+  const [cursorAlt, setCursorAlt] = useState(null);
+
+  // Derived current lists by mode
+  const scans = modeIsAlt(mode) ? scansAlt : scansMain;
+  const setScans = modeIsAlt(mode) ? setScansAlt : setScansMain;
+  const totalCount = modeIsAlt(mode) ? totalAlt : totalMain;
+  const setTotalCount = modeIsAlt(mode) ? setTotalAlt : setTotalMain;
+  const nextCursor = modeIsAlt(mode) ? cursorAlt : cursorMain;
+  const setNextCursor = modeIsAlt(mode) ? setCursorAlt : setCursorMain;
+
+  // Start page
   const [showStart, setShowStart] = useState(true);
 
-  const [sheet, setSheet] = useState('main'); // 'main' | 'alt'
-  const routes = SHEET_ROUTES[sheet];
-
+  // Controls
   const [operator, setOperator] = useState('Clerk A');
   const [wagonId1, setWagonId1] = useState('');
   const [wagonId2, setWagonId2] = useState('');
@@ -153,22 +165,17 @@ export default function App() {
   const [loadedAt] = useState('WalvisBay');
   const [destination, setDestination] = useState('');
 
+  // pending scan
   const [pending, setPending] = useState(null);
   const [qrExtras, setQrExtras] = useState({ grade: '', railType: '', spec: '', lengthM: '' });
 
+  // duplicate modal / remove modal
   const [dupPrompt, setDupPrompt] = useState(null);
   const [removePrompt, setRemovePrompt] = useState(null);
 
-  const [totalCount, setTotalCount] = useState(0);
-  const [nextCursor, setNextCursor] = useState(null);
-  const PAGE_SIZE = 200;
-
-  const socketRef = useRef(null);
-
-  // ------- Web-Audio beeper -------
+  // sound
   const audioCtxRef = useRef(null);
   const [soundOn, setSoundOn] = useState(false);
-
   const enableSound = async () => {
     try {
       if (!audioCtxRef.current) {
@@ -184,7 +191,6 @@ export default function App() {
       localStorage.setItem('rail-sound-enabled', '1');
     } catch {}
   };
-
   const playBeep = (freq = 1500, durationMs = 80) => {
     try {
       const ctx = audioCtxRef.current;
@@ -200,34 +206,43 @@ export default function App() {
       osc.stop(now + durationMs / 1000);
     } catch {}
   };
-
   const okBeep = () => playBeep(1500, 80);
   const warnBeep = () => playBeep(900, 90);
   const savedBeep = () => playBeep(2000, 140);
-
   useEffect(() => {
     if (localStorage.getItem('rail-sound-enabled') === '1') {
       enableSound();
     }
   }, []);
 
-  // ----- Damaged QR dropdown state & fields -----
+  // Damaged QR UI
   const [showDamaged, setShowDamaged] = useState(false);
   const [manualSerial, setManualSerial] = useState('');
 
-  // ---- FAST duplicate detection helpers ----
-  const serialSetRef = useRef(new Set());
-  const lastHitRef = useRef({ serial: '', at: 0 });
-
-  const knownSerialsRef = useRef(new Set());
-  const [knownCount, setKnownCount] = useState(0);
+  // duplicate helpers
   const normalizeSerial = (s) => String(s || '').trim().toUpperCase();
-  const isKnownDuplicate = (serial) => {
-    const key = normalizeSerial(serial);
-    return key && (serialSetRef.current.has(key) || knownSerialsRef.current.has(key));
-  };
+  const serialSetRefMain = useRef(new Set());
+  const serialSetRefAlt = useRef(new Set());
+
+  // known serials from import (per mode)
+  const knownMainRef = useRef(new Set());
+  const knownAltRef = useRef(new Set());
+  const [knownMainCount, setKnownMainCount] = useState(0);
+  const [knownAltCount, setKnownAltCount] = useState(0);
+  const knownCount = modeIsAlt(mode) ? knownAltCount : knownMainCount;
   const knownBadge = knownCount ? ` • Known: ${knownCount}` : '';
 
+  const getSerialSetRef = () => (modeIsAlt(mode) ? serialSetRefAlt : serialSetRefMain);
+  const getKnownRef = () => (modeIsAlt(mode) ? knownAltRef : knownMainRef);
+  const isKnownDuplicate = (ser) => {
+    const key = normalizeSerial(ser);
+    if (!key) return false;
+    const localSet = getSerialSetRef().current;
+    const knownSet = getKnownRef().current;
+    return localSet.has(key) || knownSet.has(key);
+  };
+
+  // Import known serials
   const importInputRef = useRef(null);
   const handleImportKnown = async (file) => {
     try {
@@ -235,7 +250,7 @@ export default function App() {
       const wb = XLSX.read(buf, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
-      const set = knownSerialsRef.current;
+      const set = getKnownRef().current;
 
       const headerCandidates = ['serial', 'Serial', 'SERIAL', 'Serial Number', 'SERIAL_NUMBER', 'SN', 'sn'];
       const firstRow = rows[0] || {};
@@ -254,8 +269,10 @@ export default function App() {
         }
       }
 
-      setKnownCount(set.size);
-      setStatus(`Imported known serials: ${set.size}`);
+      setKnownMainCount(knownMainRef.current.size);
+      setKnownAltCount(knownAltRef.current.size);
+
+      setStatus(`Imported known serials (${mode.toUpperCase()}): ${set.size}`);
       savedBeep();
     } catch (e) {
       console.error(e);
@@ -266,6 +283,260 @@ export default function App() {
     }
   };
 
+  // Socket
+  const socketRef = useRef(null);
+  useEffect(() => {
+    socketRef.current = socket;
+    try { socket.connect(); } catch {}
+
+    const onConnect = () => setStatus('Live sync connected');
+    const onDisconnect = (reason) => setStatus(`Live sync disconnected (${reason})`);
+    const onConnectError = (err) => setStatus(`Socket error: ${err?.message || err}`);
+
+    const onNew = (row) => {
+      setScansMain((prev) => {
+        const hasId = row.id != null && prev.some((x) => String(x.id) === String(row.id));
+        const hasSerial = row.serial && prev.some((x) => normalizeSerial(x.serial) === normalizeSerial(row.serial));
+        if (hasId || hasSerial) return prev;
+        return [row, ...prev];
+      });
+      setTotalMain((c) => c + 1);
+    };
+
+    const onNewAlt = (row) => {
+      setScansAlt((prev) => {
+        const hasId = row.id != null && prev.some((x) => String(x.id) === String(row.id));
+        const hasSerial = row.serial && prev.some((x) => normalizeSerial(x.serial) === normalizeSerial(row.serial));
+        if (hasId || hasSerial) return prev;
+        return [row, ...prev];
+      });
+      setTotalAlt((c) => c + 1);
+    };
+
+    const onDeleted = ({ id }) => {
+      setScansMain((prev) => {
+        const before = prev.length;
+        const next = prev.filter((x) => String(x.id) !== String(id));
+        if (next.length !== before) {
+          setTotalMain((c) => Math.max(0, c - 1));
+          setStatus('Scan removed (Main, synced)');
+        }
+        return next;
+      });
+    };
+
+    const onDeletedAlt = ({ id }) => {
+      setScansAlt((prev) => {
+        const before = prev.length;
+        const next = prev.filter((x) => String(x.id) !== String(id));
+        if (next.length !== before) {
+          setTotalAlt((c) => Math.max(0, c - 1));
+          setStatus('Scan removed (ALT, synced)');
+        }
+        return next;
+      });
+    };
+
+    const onCleared = () => {
+      setScansMain([]);
+      setTotalMain(0);
+      setCursorMain(null);
+      setStatus('All scans cleared (Main, synced)');
+    };
+
+    const onClearedAlt = () => {
+      setScansAlt([]);
+      setTotalAlt(0);
+      setCursorAlt(null);
+      setStatus('All scans cleared (ALT, synced)');
+    };
+
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.io?.on?.('error', onConnectError);
+
+    socket.on('new-scan', onNew);
+    socket.on('new-scan-alt', onNewAlt);
+    socket.on('deleted-scan', onDeleted);
+    socket.on('deleted-scan-alt', onDeletedAlt);
+    socket.on('cleared-scans', onCleared);
+    socket.on('cleared-scans-alt', onClearedAlt);
+
+    return () => {
+      try {
+        socket.off('connect', onConnect);
+        socket.off('disconnect', onDisconnect);
+        socket.io?.off?.('error', onConnectError);
+
+        socket.off('new-scan', onNew);
+        socket.off('new-scan-alt', onNewAlt);
+        socket.off('deleted-scan', onDeleted);
+        socket.off('deleted-scan-alt', onDeletedAlt);
+        socket.off('cleared-scans', onCleared);
+        socket.off('cleared-scans-alt', onClearedAlt);
+      } catch {}
+      socketRef.current = null;
+    };
+  }, []);
+
+  // Build fast serial sets anytime lists change
+  useEffect(() => {
+    const s = new Set();
+    for (const r of scansMain) if (r?.serial) s.add(normalizeSerial(r.serial));
+    serialSetRefMain.current = s;
+  }, [scansMain]);
+  useEffect(() => {
+    const s = new Set();
+    for (const r of scansAlt) if (r?.serial) s.add(normalizeSerial(r.serial));
+    serialSetRefAlt.current = s;
+  }, [scansAlt]);
+
+  // initial loads (once per mode)
+  const mainLoadedRef = useRef(false);
+  const altLoadedRef = useRef(false);
+  useEffect(() => {
+    const load = async (m) => {
+      try {
+        const [countResp, pageResp] = await Promise.all([
+          fetch(api(endpoints.stagedCount(m))),
+          fetch(api(`${endpoints.staged(m)}?limit=200`)),
+        ]);
+        const countData = await countResp.json().catch(()=>({count:0}));
+        const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
+
+        const normalized = (pageData.rows || []).map((r) => ({
+          ...r,
+          wagonId1: r.wagon1Id ?? r.wagonId1 ?? '',
+          wagonId2: r.wagon2Id ?? r.wagonId2 ?? '',
+          wagonId3: r.wagon3Id ?? r.wagonId3 ?? '',
+          receivedAt: r.receivedAt ?? r.recievedAt ?? '',
+          loadedAt: r.loadedAt ?? '',
+          destination: r.destination ?? r.dest ?? '',
+        }));
+
+        if (modeIsAlt(m)) {
+          setScansAlt(normalized);
+          setTotalAlt(countData.count ?? pageData.total ?? 0);
+          setCursorAlt(pageData.nextCursor ?? null);
+        } else {
+          setScansMain(normalized);
+          setTotalMain(countData.count ?? pageData.total ?? 0);
+          setCursorMain(pageData.nextCursor ?? null);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+
+    if (!mainLoadedRef.current) {
+      mainLoadedRef.current = true;
+      load('main');
+    }
+    if (!altLoadedRef.current) {
+      altLoadedRef.current = true;
+      load('alt');
+    }
+  }, []);
+
+  const PAGE_SIZE = 200;
+  const loadMore = async () => {
+    const m = mode;
+    const cursor = modeIsAlt(m) ? cursorAlt : cursorMain;
+    if (!cursor) return;
+
+    const resp = await fetch(api(`${endpoints.staged(m)}?limit=${PAGE_SIZE}&cursor=${cursor}`));
+    const data = await resp.json().catch(()=>({rows:[], nextCursor:null}));
+
+    const more = (data.rows || []).map((r) => ({
+      ...r,
+      wagonId1: r.wagon1Id ?? r.wagonId1 ?? '',
+      wagonId2: r.wagon2Id ?? r.wagonId2 ?? '',
+      wagonId3: r.wagon3Id ?? r.wagonId3 ?? '',
+      receivedAt: r.receivedAt ?? r.recievedAt ?? '',
+      loadedAt: r.loadedAt ?? '',
+      destination: r.destination ?? r.dest ?? '',
+    }));
+
+    if (modeIsAlt(m)) {
+      setScansAlt((prev) => [...prev, ...more]);
+      setCursorAlt(data.nextCursor ?? null);
+    } else {
+      setScansMain((prev) => [...prev, ...more]);
+      setCursorMain(data.nextCursor ?? null);
+    }
+  };
+
+  // Flush offline queues (both modes) when online
+  useEffect(() => {
+    async function flushQueueForMode(m) {
+      try {
+        const items = await idbAll(m);
+        if (items.length === 0) return;
+        const payload = items.map(x => x.payload);
+
+        // bulk endpoint differs per mode
+        const bulkPath = modeIsAlt(m) ? '/scans-alt/bulk' : '/scans/bulk';
+        const resp = await fetch(api(bulkPath), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: payload })
+        });
+        if (resp.ok) {
+          await idbClear(items.map(x => x.id), m);
+
+          // reload first page for that mode
+          const [countResp, pageResp] = await Promise.all([
+            fetch(api(endpoints.stagedCount(m))),
+            fetch(api(`${endpoints.staged(m)}?limit=${PAGE_SIZE}`)),
+          ]);
+          const countData = await countResp.json().catch(()=>({count:0}));
+          const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
+          const normalized = (pageData.rows || []).map((r) => ({
+            ...r,
+            wagonId1: r.wagon1Id ?? r.wagonId1 ?? '',
+            wagonId2: r.wagon2Id ?? r.wagonId2 ?? '',
+            wagonId3: r.wagon3Id ?? r.wagonId3 ?? '',
+            receivedAt: r.receivedAt ?? r.recievedAt ?? '',
+            loadedAt: r.loadedAt ?? '',
+            destination: r.destination ?? r.dest ?? '',
+          }));
+
+          if (modeIsAlt(m)) {
+            setScansAlt(normalized);
+            setCursorAlt(pageData.nextCursor ?? null);
+            setTotalAlt(pageData.total ?? normalized.length);
+          } else {
+            setScansMain(normalized);
+            setCursorMain(pageData.nextCursor ?? null);
+            setTotalMain(pageData.total ?? normalized.length);
+          }
+        }
+      } catch (e) {
+        console.warn(`Offline queue flush failed (${m}):`, e.message);
+      }
+    }
+
+    async function flushBoth() {
+      await flushQueueForMode('main');
+      await flushQueueForMode('alt');
+    }
+    window.addEventListener('online', flushBoth);
+    flushBoth();
+    return () => window.removeEventListener('online', flushBoth);
+  }, []);
+
+  // FAST local duplicate set for current mode
+  const scanSerialSet = useMemo(() => {
+    const s = new Set();
+    for (const r of scans) if (r?.serial) s.add(normalizeSerial(r.serial));
+    return s;
+  }, [scans]);
+
+  const lastHitRef = useRef({ serial: '', at: 0 });
+  const localHasSerial = (serial) => scanSerialSet.has(normalizeSerial(serial));
+  const findDuplicates = (serial) => scans.filter((r) => normalizeSerial(r.serial) === normalizeSerial(serial));
+
+  // highlight & scroll existing row
   const [flashSerial, setFlashSerial] = useState(null);
   const flashExistingRow = (serialKey) => {
     if (!serialKey) return;
@@ -277,205 +548,23 @@ export default function App() {
     setTimeout(() => setFlashSerial(null), 2500);
   };
 
-  useEffect(() => {
-    const s = new Set();
-    for (const r of scans) if (r?.serial) s.add(String(r.serial).trim().toUpperCase());
-    serialSetRef.current = s;
-  }, [scans]);
-
-  const localHasSerial = (serial) => {
-    const key = String(serial || '').trim().toUpperCase();
-    if (!key) return false;
-    return serialSetRef.current.has(key);
-  };
-
-  // --------- load page based on selected sheet ---------
-  useEffect(() => {
-    (async () => {
-      try {
-        const [countResp, pageResp] = await Promise.all([
-          fetch(api(routes.stagedCount)),
-          fetch(api(`${routes.staged}?limit=${PAGE_SIZE}`)),
-        ]);
-        const countData = await countResp.json().catch(()=>({count:0}));
-        const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
-
-        const normalized = (pageData.rows || []).map((r) => ({
-          ...r,
-          wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
-          wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
-          wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
-          receivedAt: r.receivedAt ?? r.recievedAt ?? '',
-          loadedAt: r.loadedAt ?? '',
-          destination: r.destination ?? r.dest ?? '',
-        }));
-
-        setScans(normalized);
-        setTotalCount(countData.count ?? pageData.total ?? 0);
-        setNextCursor(pageData.nextCursor ?? null);
-        setStatus(`Loaded ${sheet.toUpperCase()} sheet`);
-      } catch (e) {
-        console.error(e);
-        setScans([]);
-        setTotalCount(0);
-        setNextCursor(null);
-        setStatus(`Failed to load ${sheet} sheet`);
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheet]);
-
-  const loadMore = async () => {
-    if (!nextCursor) return;
-    const resp = await fetch(api(`${routes.staged}?limit=${PAGE_SIZE}&cursor=${nextCursor}`));
-    const data = await resp.json().catch(()=>({rows:[], nextCursor:null}));
-    const more = (data.rows || []).map((r) => ({
-      ...r,
-      wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
-      wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
-      wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
-      receivedAt: r.receivedAt ?? r.recievedAt ?? '',
-      loadedAt: r.loadedAt ?? '',
-      destination: r.destination ?? r.dest ?? '',
-    }));
-    setScans(prev => [...prev, ...more]);
-    setNextCursor(data.nextCursor ?? null);
-  };
-
-  // Auto-sync offline queue when online (per sheet)
-  useEffect(() => {
-    async function flushQueue() {
-      try {
-        const items = await idbAll();
-        if (items.length === 0) return;
-        const payload = items.filter(x => x?.sheet === sheet).map(x => x.payload);
-        if (payload.length === 0) return;
-
-        const resp = await fetch(api(routes.bulk), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ items: payload })
-        });
-        if (resp.ok) {
-          const toRemove = (await idbAll()).filter(x => x.sheet === sheet).map(x => x.id);
-          await idbClear(toRemove);
-
-          const pageResp = await fetch(api(`${routes.staged}?limit=${PAGE_SIZE}`));
-          const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
-          const normalized = (pageData.rows || []).map((r) => ({
-            ...r,
-            wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
-            wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
-            wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
-            receivedAt: r.receivedAt ?? r.recievedAt ?? '',
-            loadedAt: r.loadedAt ?? '',
-            destination: r.destination ?? r.dest ?? '',
-          }));
-          setScans(normalized);
-          setNextCursor(pageData.nextCursor ?? null);
-          setTotalCount(pageData.total ?? normalized.length);
-
-          setStatus(`Synced ${payload.length} offline ${sheet} scan(s)`);
-        }
-      } catch (e) {
-        console.warn('Offline queue flush failed:', e.message);
-      }
-    }
-
-    window.addEventListener('online', flushQueue);
-    flushQueue();
-    return () => window.removeEventListener('online', flushQueue);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheet]);
-
-  // Live sync via Socket.IO (per-sheet channels)
-  useEffect(() => {
-    socketRef.current = socket;
-    try { socket.connect(); } catch {}
-
-    const onNew = (row) => {
-      if (!row) return;
-      setScans((prev) => {
-        const hasId = row.id != null && prev.some((x) => String(x.id) === String(row.id));
-        const hasSerial = row.serial && prev.some((x) =>
-          String(x.serial).trim().toUpperCase() === String(row.serial).trim().toUpperCase()
-        );
-        if (hasId || hasSerial) return prev;
-        return [{
-          ...row,
-          destination: row.destination ?? row.dest ?? '',
-        }, ...prev];
-      });
-      setTotalCount((c) => c + 1);
-    };
-
-    const onDeleted = ({ id }) => {
-      if (id == null) return;
-      setScans((prev) => {
-        const before = prev.length;
-        const next = prev.filter((x) => String(x.id) !== String(id));
-        if (next.length !== before) {
-          setTotalCount((c) => Math.max(0, c - 1));
-          setStatus('Scan removed (synced)');
-        }
-        return next;
-      });
-    };
-
-    const onCleared = () => {
-      setScans([]);
-      setTotalCount(0);
-      setNextCursor(null);
-      setStatus('All scans cleared (synced)');
-    };
-
-    const onConnect = () => setStatus('Live sync connected');
-    const onDisconnect = (reason) => setStatus(`Live sync disconnected (${reason})`);
-    const onConnectError = (err) => setStatus(`Socket error: ${err?.message || err}`);
-
-    socket.on('connect', onConnect);
-    socket.on('disconnect', onDisconnect);
-    socket.io?.on?.('error', onConnectError);
-
-    socket.on(routes.socketNew, onNew);
-    socket.on(routes.socketDeleted, onDeleted);
-    socket.on(routes.socketCleared, onCleared);
-
-    return () => {
-      try {
-        socket.off('connect', onConnect);
-        socket.off('disconnect', onDisconnect);
-        socket.io?.off?.('error', onConnectError);
-        socket.off(routes.socketNew, onNew);
-        socket.off(routes.socketDeleted, onDeleted);
-        socket.off(routes.socketCleared, onCleared);
-      } catch {}
-      socketRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheet]);
-
-  const findDuplicates = (serial) => {
-    const key = String(serial || '').trim().toUpperCase();
-    if (!key) return [];
-    return scans.filter((r) => String(r.serial || '').trim().toUpperCase() === key);
-  };
-
+  // SCAN handler (honors mode)
   const onDetected = async (rawText) => {
     const parsed = parseQrPayload(rawText);
     const serial = (parsed.serial || rawText || '').trim();
-    const serialKey = serial.toUpperCase();
+    const serialKey = normalizeSerial(serial);
+
     if (!serialKey) {
       warnBeep();
       setStatus('Scan had no detectable serial');
       return;
     }
+
     const now = Date.now();
-    if (lastHitRef.current.serial === serialKey && now - lastHitRef.current.at < 1200) {
-      return;
-    }
+    if (lastHitRef.current.serial === serialKey && now - lastHitRef.current.at < 1200) return;
     lastHitRef.current = { serial: serialKey, at: now };
 
+    // union check (local + imported)
     if (isKnownDuplicate(serialKey)) {
       warnBeep();
       setDupPrompt({
@@ -500,8 +589,9 @@ export default function App() {
       return;
     }
 
+    // server exists check for this mode
     try {
-      const resp = await fetch(api(routes.exists(serialKey)));
+      const resp = await fetch(api(endpoints.exists(mode, serialKey)));
       if (resp.ok) {
         const info = await resp.json();
         if (info?.exists) {
@@ -564,13 +654,13 @@ export default function App() {
   const confirmRemoveScan = async () => {
     if (!removePrompt) return;
     try {
-      const resp = await fetch(api(routes.stagedDelete(removePrompt)), { method: 'DELETE' });
+      const resp = await fetch(api(`${endpoints.staged(mode)}/${removePrompt}`), { method: 'DELETE' });
       if (!resp.ok) {
         const errText = await resp.text().catch(() => '');
         throw new Error(errText || 'Failed to remove scan');
       }
       setScans((prev) => prev.filter((scan) => scan.id !== removePrompt));
-      setTotalCount(c => Math.max(0,  c - 1));
+      setTotalCount((c) => Math.max(0, c - 1));
       setRemovePrompt(null);
       setStatus('Scan removed successfully');
     } catch (e) {
@@ -581,11 +671,19 @@ export default function App() {
   };
   const discardRemovePrompt = () => setRemovePrompt(null);
 
+  const pushKnownForMode = (serial) => {
+    const set = getKnownRef().current;
+    set.add(normalizeSerial(serial));
+    setKnownMainCount(knownMainRef.current.size);
+    setKnownAltCount(knownAltRef.current.size);
+  };
+
   const confirmPending = async () => {
     if (!pending?.serial || !String(pending.serial).trim()) {
       alert('Nothing to save yet. Scan a code first. If QR is damaged, use the Damaged QR dropdown.');
       return;
     }
+    // union duplicate re-check
     if (isKnownDuplicate(pending.serial)) {
       warnBeep();
       setDupPrompt({
@@ -593,12 +691,14 @@ export default function App() {
         matches: findDuplicates(pending.serial),
         candidate: { pending, qrExtras },
       });
+      if (localHasSerial(String(pending.serial))) flashExistingRow(String(pending.serial).toUpperCase());
       setStatus('Duplicate detected — awaiting decision');
       return;
     }
 
+    // server exists
     try {
-      const r = await fetch(api(routes.exists(pending.serial)));
+      const r = await fetch(api(endpoints.exists(mode, pending.serial)));
       if (r.ok) {
         const j = await r.json();
         if (j?.exists) {
@@ -608,6 +708,7 @@ export default function App() {
             matches: [j.row || { serial: pending.serial }],
             candidate: { pending, qrExtras },
           });
+          if (localHasSerial(String(pending.serial))) flashExistingRow(String(pending.serial).toUpperCase());
           setStatus('Duplicate detected — awaiting decision');
           return;
         }
@@ -633,36 +734,35 @@ export default function App() {
     };
 
     try {
-      const resp = await fetch(api(routes.scan), {
+      const resp = await fetch(api(endpoints.scan(mode)), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rec),
       });
-      const data = await resp.json().catch(()=>null);
+      let data = null;
+      try { data = await resp.json(); } catch {}
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
       const newId = data?.id || Date.now();
       setScans((prev) => [{ id: newId, ...rec }, ...prev]);
-      setTotalCount(c => c + 1);
+      setTotalCount((c) => c + 1);
 
-      knownSerialsRef.current.add(normalizeSerial(rec.serial));
-      setKnownCount(knownSerialsRef.current.size);
+      pushKnownForMode(rec.serial);
 
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
-      setStatus(`Saved to ${sheet.toUpperCase()} staged`);
+      setStatus(`Saved to staged (${mode.toUpperCase()})`);
       savedBeep();
     } catch (e) {
-      await idbAdd({ payload: rec, sheet });
+      await idbAdd({ payload: rec }, mode);
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
-      setTotalCount(c => c + 1);
+      setTotalCount((c) => c + 1);
 
-      knownSerialsRef.current.add(normalizeSerial(rec.serial));
-      setKnownCount(knownSerialsRef.current.size);
+      pushKnownForMode(rec.serial);
 
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
-      setStatus(`Saved locally (offline) — will sync to ${sheet}`);
+      setStatus(`Saved locally (offline) — will sync (${mode.toUpperCase()})`);
       savedBeep();
     }
   };
@@ -672,8 +772,7 @@ export default function App() {
       alert('Unable to save: enter Serial (or scan a QR).');
       return;
     }
-
-    const serialKey = manualSerial.trim().toUpperCase();
+    const serialKey = normalizeSerial(manualSerial);
 
     if (isKnownDuplicate(serialKey)) {
       warnBeep();
@@ -694,12 +793,13 @@ export default function App() {
           },
         },
       });
+      if (localHasSerial(serialKey)) flashExistingRow(serialKey);
       setStatus('Duplicate detected — awaiting decision');
       return;
     }
 
     try {
-      const r = await fetch(api(routes.exists(serialKey)));
+      const r = await fetch(api(endpoints.exists(mode, serialKey)));
       if (r.ok) {
         const j = await r.json();
         if (j?.exists && !confirm('Duplicate exists on server. Save anyway?')) return;
@@ -725,7 +825,7 @@ export default function App() {
     };
 
     try {
-      const resp = await fetch(api(routes.scan), {
+      const resp = await fetch(api(endpoints.scan(mode)), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rec),
@@ -737,48 +837,44 @@ export default function App() {
       setScans((prev) => [{ id: newId, ...rec }, ...prev ]);
       setTotalCount((c) => c + 1);
 
-      knownSerialsRef.current.add(normalizeSerial(rec.serial));
-      setKnownCount(knownSerialsRef.current.size);
+      pushKnownForMode(rec.serial);
 
       setManualSerial('');
       setShowDamaged(false);
-      setStatus(`Damaged QR saved to ${sheet.toUpperCase()}`);
+      setStatus(`Damaged QR saved (${mode.toUpperCase()})`);
       savedBeep();
     } catch (e) {
-      await idbAdd({ payload: rec, sheet });
+      await idbAdd({ payload: rec }, mode);
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev ]);
       setTotalCount((c) => c + 1);
 
-      knownSerialsRef.current.add(normalizeSerial(rec.serial));
-      setKnownCount(knownSerialsRef.current.size);
+      pushKnownForMode(rec.serial);
 
       setManualSerial('');
       setShowDamaged(false);
-      setStatus(`Damaged QR saved locally (offline) — will sync to ${sheet}`);
+      setStatus(`Damaged QR saved locally (offline) — will sync (${mode.toUpperCase()})`);
       savedBeep();
     }
   };
 
-  const exportToExcel = async (kind = 'main') => {
-    const r = SHEET_ROUTES[kind];
+  // Export (per mode)
+  const exportXlsm = async () => {
     try {
-      const resp = await fetch(api(r.exportXlsm), { method: 'POST' });
+      const resp = await fetch(api(endpoints.exportXlsm(mode)), { method: 'POST' });
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
         throw new Error(text || `HTTP ${resp.status}`);
       }
       const dispo = resp.headers.get('Content-Disposition') || '';
       const match = dispo.match(/filename="?([^"]+)"?/i);
-      const filename = match?.[1] || `${kind === 'alt' ? 'Alt' : 'Master'}_${Date.now()}.xlsm`;
+      const filename = match?.[1] || `${modeIsAlt(mode) ? 'Alt' : 'Master'}_${Date.now()}.xlsm`;
 
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
+      a.href = url; a.download = filename;
       document.body.appendChild(a);
-      a.click();
-      a.remove();
+      a.click(); a.remove();
       URL.revokeObjectURL(url);
       setStatus(`Exported ${filename}`);
     } catch (e) {
@@ -790,23 +886,21 @@ export default function App() {
 
   const exportXlsxWithImages = async () => {
     try {
-      const resp = await fetch(api(routes.exportXlsxQR), { method: 'POST' });
+      const resp = await fetch(api(endpoints.exportXlsxImages(mode)), { method: 'POST' });
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
         throw new Error(text || `HTTP ${resp.status}`);
       }
       const dispo = resp.headers.get('Content-Disposition') || '';
       const match = dispo.match(/filename="?([^"]+)"?/i);
-      const filename = match?.[1] || `${sheet === 'alt' ? 'Alt' : 'Master'}_QR_${Date.now()}.xlsx`;
+      const filename = match?.[1] || `${modeIsAlt(mode) ? 'Alt_QR' : 'Master_QR'}_${Date.now()}.xlsx`;
 
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
+      a.href = url; a.download = filename;
       document.body.appendChild(a);
-      a.click();
-      a.remove();
+      a.click(); a.remove();
       URL.revokeObjectURL(url);
       setStatus(`Exported ${filename}`);
     } catch (e) {
@@ -816,18 +910,63 @@ export default function App() {
     }
   };
 
+  // Password-protected clear buttons (Main & Alt)
+  const clearAllForCurrentMode = async () => {
+    const pw = window.prompt(`Enter password to clear ALL ${mode.toUpperCase()} scans:`);
+    if (pw == null) return; // cancelled
+    if (pw !== 'confirm1234') {
+      alert('Incorrect password.');
+      return;
+    }
+    try {
+      const resp = await fetch(api(endpoints.clearAll(mode)), { method: 'POST' });
+      if (!resp.ok) {
+        const txt = await resp.text().catch(()=> '');
+        throw new Error(txt || `HTTP ${resp.status}`);
+      }
+      if (modeIsAlt(mode)) {
+        setScansAlt([]); setTotalAlt(0); setCursorAlt(null);
+      } else {
+        setScansMain([]); setTotalMain(0); setCursorMain(null);
+      }
+      setStatus(`${mode.toUpperCase()} scans cleared`);
+      savedBeep();
+    } catch (e) {
+      console.error(e);
+      alert(`Failed to clear ${mode.toUpperCase()} scans: ${e.message || e}`);
+      setStatus(`Failed to clear ${mode.toUpperCase()} scans`);
+      warnBeep();
+    }
+  };
+
+  // ---------- RENDER ----------
   if (showStart) {
     return (
       <div style={{ minHeight: '100vh', background: '#fff' }}>
         <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
           <StartPage
-            onStartMain={() => { setSheet('main'); setShowStart(false); }}
-            onStartAlt={() => { setSheet('alt'); setShowStart(false); }}
-            onExportMain={() => exportToExcel('main')}
-            onExportAlt={() => exportToExcel('alt')}
+            onContinue={() => setShowStart(false)}
+            onExport={exportXlsm}
             operator={operator}
             setOperator={setOperator}
           />
+          {/* Quick toggle to ALT from start if needed */}
+          <div className="card" style={{ marginTop: 12, display: 'flex', gap: 12 }}>
+            <button
+              className={`btn ${mode === 'main' ? '' : 'btn-outline'}`}
+              onClick={() => setMode('main')}
+              title="Work on Main sheet"
+            >
+              Use MAIN
+            </button>
+            <button
+              className={`btn ${mode === 'alt' ? '' : 'btn-outline'}`}
+              onClick={() => setMode('alt')}
+              title="Work on ALT sheet"
+            >
+              Use ALT (separate)
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -840,21 +979,37 @@ export default function App() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div className="logo" />
             <div>
-              <div className="title">Rail Inventory — {sheet.toUpperCase()}{knownBadge}</div>
+              <div className="title">Rail Inventory ({mode.toUpperCase()}){knownBadge}</div>
               <div className="status">{status}</div>
             </div>
           </div>
 
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn btn-outline" onClick={() => setShowStart(true)}>Back to Start</button>
-            <button className="btn btn-outline" onClick={() => setSheet(s => s === 'main' ? 'alt' : 'main')}>
-              Switch to {sheet === 'main' ? 'ALT' : 'MAIN'}
-            </button>
+
+            <div className="btn-group" role="group" aria-label="mode">
+              <button
+                className={`btn ${mode === 'main' ? '' : 'btn-outline'}`}
+                onClick={() => setMode('main')}
+                title="Switch to MAIN"
+              >
+                MAIN
+              </button>
+              <button
+                className={`btn ${mode === 'alt' ? '' : 'btn-outline'}`}
+                onClick={() => setMode('alt')}
+                title="Switch to ALT"
+              >
+                ALT
+              </button>
+            </div>
+
             <button className="btn" onClick={enableSound}>
               {soundOn ? '🔊 Sound On' : '🔈 Enable Sound'}
             </button>
+
             <button className="btn btn-outline" onClick={() => importInputRef.current?.click()}>
-              Import Known Serials
+              Import Known Serials ({mode.toUpperCase()})
             </button>
             <input
               ref={importInputRef}
@@ -866,11 +1021,22 @@ export default function App() {
                 if (f) handleImportKnown(f);
               }}
             />
+
+            {/* Password-protected clear buttons per current mode */}
+            <button
+              className="btn btn-outline"
+              onClick={clearAllForCurrentMode}
+              title={`Clear all ${mode.toUpperCase()} scans (password required)`}
+              style={{ borderColor: 'rgb(220,38,38)', color: 'rgb(220,38,38)' }}
+            >
+              Clear {mode.toUpperCase()} Scans
+            </button>
           </div>
         </div>
       </header>
 
       <div className="grid" style={{ marginTop: 20 }}>
+        {/* Scanner */}
         <section className="card">
           <div
             style={{
@@ -882,6 +1048,7 @@ export default function App() {
             }}
           >
             <h3 style={{ margin: 0 }}>Scanner</h3>
+
             <button
               className="btn"
               onClick={confirmPending}
@@ -902,8 +1069,9 @@ export default function App() {
           )}
         </section>
 
+        {/* Controls */}
         <section className="card">
-          <h3>Controls</h3>
+          <h3>Controls ({mode.toUpperCase()})</h3>
           <div className="controls-grid" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
             <div>
               <label className="status">Operator</label>
@@ -968,10 +1136,11 @@ export default function App() {
             >
               Discard
             </button>
-            <button className="btn" onClick={() => exportToExcel(sheet)}>Export to Excel</button>
+            <button className="btn" onClick={exportXlsm}>Export to Excel</button>
             <button className="btn" onClick={exportXlsxWithImages}>Export XLSX (with QR images)</button>
           </div>
 
+          {/* Damaged QR */}
           <div style={{ marginTop: 16 }}>
             <button
               className="btn btn-outline"
@@ -985,7 +1154,7 @@ export default function App() {
             {showDamaged && (
               <div id="damaged-panel" className="card" style={{ marginTop: 12 }}>
                 <div className="status" style={{ marginBottom: 8 }}>
-                  Enter details when the QR is damaged and cannot be scanned.
+                  Enter details when the QR is damaged and cannot be scanned. ({mode.toUpperCase()})
                 </div>
                 <div
                   style={{
@@ -1005,33 +1174,17 @@ export default function App() {
                   </div>
 
                   <div>
-                    <label className="status">Wagon ID 1</label>
-                    <input className="input" value={wagonId1} onChange={(e) => setWagonId1(e.target.value)} placeholder="e.g. WGN-0123" />
-                  </div>
-                  <div>
-                    <label className="status">Wagon ID 2</label>
-                    <input className="input" value={wagonId2} onChange={(e) => setWagonId2(e.target.value)} placeholder="e.g. WGN-0456" />
-                  </div>
-                  <div>
-                    <label className="status">Wagon ID 3</label>
-                    <input className="input" value={wagonId3} onChange={(e) => setWagonId3(e.target.value)} placeholder="e.g. WGN-0789" />
-                  </div>
-
-                  <div>
                     <label className="status">Rail Type (fixed)</label>
                     <input className="input" value={FIXED_DAMAGED.railType} readOnly />
                   </div>
-
                   <div>
                     <label className="status">Grade (fixed)</label>
                     <input className="input" value={FIXED_DAMAGED.grade} readOnly />
                   </div>
-
                   <div>
                     <label className="status">Spec (fixed)</label>
                     <input className="input" value={FIXED_DAMAGED.spec} readOnly />
                   </div>
-
                   <div>
                     <label className="status">Length (fixed)</label>
                     <input className="input" value={FIXED_DAMAGED.lengthM} readOnly />
@@ -1046,8 +1199,9 @@ export default function App() {
           </div>
         </section>
 
+        {/* Staged Scans */}
         <section className="card">
-          <h3>Staged Scans ({totalCount})</h3>
+          <h3>Staged Scans ({totalCount}) — {mode.toUpperCase()}</h3>
           <div className="list">
             {scans.map((s) => (
               <div
@@ -1104,10 +1258,11 @@ export default function App() {
       <footer className="footer">
         <div className="footer-inner">
           <span>© {new Date().getFullYear()} Top Notch Solutions</span>
-          <span className="tag">Rail Inventory • v1</span>
+          <span className="tag">Rail Inventory • v1 • {mode.toUpperCase()}</span>
         </div>
       </footer>
 
+      {/* Remove confirmation */}
       {removePrompt && (
         <div
           role="dialog"
@@ -1119,7 +1274,7 @@ export default function App() {
               <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(220,38,38,.1)', color: 'rgb(220,38,38)', fontSize: 22 }}>⚠️</div>
               <div style={{ flex: 1 }}>
                 <h3 style={{ margin: 0 }}>Are you sure?</h3>
-                <div className="status" style={{ marginTop: 6 }}>Are you sure you want to remove this staged scan from the list?</div>
+                <div className="status" style={{ marginTop: 6 }}>Remove this staged scan from the {mode.toUpperCase()} list?</div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
                   <button className="btn btn-outline" onClick={discardRemovePrompt}>Cancel</button>
                   <button className="btn" onClick={confirmRemoveScan}>Confirm</button>
@@ -1130,6 +1285,7 @@ export default function App() {
         </div>
       )}
 
+      {/* Duplicate modal */}
       {dupPrompt && (
         <div
           role="dialog"
@@ -1142,7 +1298,7 @@ export default function App() {
               <div style={{ flex: 1 }}>
                 <h3 style={{ margin: 0 }}>Duplicate detected</h3>
                 <div className="status" style={{ marginTop: 6 }}>
-                  The serial <strong>{dupPrompt.serial}</strong> already exists in the staged list ({dupPrompt.matches?.length ?? 1}).
+                  The serial <strong>{dupPrompt.serial}</strong> already exists in the {mode.toUpperCase()} staged list ({dupPrompt.matches?.length ?? 1}).
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
                   <button className="btn btn-outline" onClick={handleDupDiscard}>Discard</button>

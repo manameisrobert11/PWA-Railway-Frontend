@@ -6,9 +6,11 @@ export default function StartPage({
   onStartAlt,
   onExportMain,
   onExportAlt,
-  operator, setOperator,
+  operator,
+  setOperator,
 }) {
   const [now, setNow] = useState(new Date());
+
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
@@ -29,23 +31,23 @@ export default function StartPage({
           {dateStr} • <span style={{ fontVariantNumeric: 'tabular-nums' }}>{timeStr}</span>
         </div>
 
-        {/* two start buttons */}
+        {/* MAIN / ALT start buttons */}
         <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <button type="button" className="btn" onClick={() => onStartMain?.()}>
-            Start Scanning (Main)
+          <button type="button" className="btn" onClick={onStartMain}>
+            Start Scanning (MAIN)
           </button>
-          <button type="button" className="btn btn-outline" onClick={() => onStartAlt?.()}>
-            Start Scanning (Alt)
+          <button type="button" className="btn btn-outline" onClick={onStartAlt}>
+            Start Scanning (ALT)
           </button>
         </div>
 
-        {/* two export buttons */}
+        {/* Optional exports right from home */}
         <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <button type="button" className="btn btn-outline" onClick={() => onExportMain?.()}>
-            Export Main (.xlsm)
+          <button type="button" className="btn btn-outline" onClick={onExportMain}>
+            Export MAIN Excel (.xlsm)
           </button>
-          <button type="button" className="btn btn-outline" onClick={() => onExportAlt?.()}>
-            Export Alt (.xlsm)
+          <button type="button" className="btn btn-outline" onClick={onExportAlt}>
+            Export ALT Excel (.xlsm)
           </button>
         </div>
       </section>

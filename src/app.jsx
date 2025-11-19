@@ -38,37 +38,41 @@ function parseQrPayload(raw) {
     .replace(/\s+/g, ' ')
     .trim();
 
-  const tokens = clean.split(/[ \t\r\n|,:/]+/).filter(Boolean);
+  // split but keep dashes inside tokens (some serials use dashes)
+  const tokens = clean.split(/[ \t\r\n|,:/]+/).filter(Boolean).map(t => t.trim());
+
+  // uppercased tokens for case-insensitive matching
+  const upTokens = tokens.map(t => t.toUpperCase());
 
   const serial =
-    tokens.find((t) => /^[A-Z0-9]{12,}$/.test(t)) ||
-    tokens.find((t) => /^[A-Z0-9]{8,}$/.test(t)) ||
+    upTokens.find((t) => /^[A-Z0-9-]{12,}$/.test(t)) ||
+    upTokens.find((t) => /^[A-Z0-9-]{8,}$/.test(t)) ||
     '';
 
-  let grade = (tokens.find((t) => /^SAR\d{2}$/i.test(t)) || '').toUpperCase();
+  let grade = (upTokens.find((t) => /^SAR\d{2}$/i.test(t)) || '').toUpperCase();
 
   let railType = '';
-  for (const t of tokens) {
-    const u = t.toUpperCase();
-    if (/^R\d{3}(?:L?HT)?$/.test(u)) { railType = u; break; }
+  for (const t of upTokens) {
+    if (/^R\d{3}(?:L?HT)?$/.test(t)) { railType = t; break; }
   }
 
   let spec = '';
-  for (let i = 0; i < tokens.length; i++) {
-    const u = tokens[i].toUpperCase();
+  for (let i = 0; i < upTokens.length; i++) {
+    const u = upTokens[i];
     if (/^(ATX|ATA|AREMA|UIC|EN\d*|GB\d*)$/.test(u)) {
-      const next = tokens[i + 1] || '';
-      if (/^[A-Z0-9-]{3,}$/i.test(next)) spec = `${tokens[i]} ${next}`;
-      else spec = tokens[i];
+      const next = upTokens[i + 1] || '';
+      if (/^[A-Z0-9-]{3,}$/i.test(next)) spec = `${u} ${next}`;
+      else spec = u;
       break;
     }
   }
 
-  const lengthM = tokens.find((t) => /^\d{1,3}(\.\d+)?m$/i.test(t)) || '';
+  const lengthM = upTokens.find((t) => /^\d{1,3}(\.\d+)?M$/i.test(t)) || '';
 
   if (grade && railType && grade === railType) grade = '';
 
-  return { raw: clean, serial, grade, railType, spec, lengthM };
+  // return raw as original cleaned (not uppercased) for qrRaw storage
+  return { raw: clean, serial: serial || '', grade, railType, spec, lengthM };
 }
 
 // IndexedDB queues (separate per mode)
@@ -592,7 +596,9 @@ export default function App() {
           return;
         }
       }
-    } catch {}
+    } catch (err) {
+      console.warn('exists check failed:', err && err.message);
+    }
 
     okBeep();
     setPending({ serial: serialKey, raw: parsed.raw || String(rawText), capturedAt: new Date().toISOString() });
@@ -852,6 +858,7 @@ export default function App() {
 
       const body = await resp.json().catch(()=> ({}));
       await idbClear(items.map(x => x.id), m);
+      console.log(`[flushLocalQueueBeforeExport] flushed ${payload.length} items for mode=${m}`);
       return { flushed: payload.length, result: body };
     } catch (e) {
       console.warn('flushLocalQueueBeforeExport error:', e?.message || e);
@@ -859,8 +866,13 @@ export default function App() {
     }
   }
 
+  // Exporting state to prevent double-click races
+  const [exporting, setExporting] = useState(false);
+
   // Exports per mode (helper so StartPage can export without changing mode)
   const exportXlsmForMode = async (m) => {
+    if (exporting) return;
+    setExporting(true);
     try {
       setStatus('Preparing export — syncing local queue...');
       const flush = await flushLocalQueueBeforeExport({ useAlt: modeIsAlt(m) });
@@ -898,10 +910,14 @@ export default function App() {
       console.error('Export failed:', e);
       alert(`Export failed: ${e.message}`);
       setStatus('Export failed');
+    } finally {
+      setExporting(false);
     }
   };
 
   const exportXlsxWithImages = async () => {
+    if (exporting) return;
+    setExporting(true);
     try {
       setStatus('Preparing export (images) — syncing local queue...');
       const flush = await flushLocalQueueBeforeExport({ useAlt: modeIsAlt(mode) });
@@ -938,17 +954,20 @@ export default function App() {
       console.error('Export (images) failed:', e);
       alert(`Export (images) failed: ${e.message}`);
       setStatus('Export (images) failed');
+    } finally {
+      setExporting(false);
     }
   };
 
-  // Password-protected clear for current mode
+  // Password-protected clear for current mode (require typed password + confirm)
   const clearAllForCurrentMode = async () => {
-    const pw = window.prompt(`Enter password to clear ALL ${mode.toUpperCase()} scans:`);
+    const pw = window.prompt(`Type the CLEAR password to clear ALL ${mode.toUpperCase()} scans:`); // simple UX
     if (pw == null) return;
     if (pw !== 'confirm1234') {
       alert('Incorrect password.');
       return;
     }
+    if (!confirm(`This will PERMANENTLY delete ALL ${mode.toUpperCase()} staged scans. Continue?`)) return;
     try {
       const resp = await fetch(api(endpoints.clearAll(mode)), { method: 'POST' });
       if (!resp.ok) {
@@ -1157,8 +1176,12 @@ export default function App() {
             >
               Discard
             </button>
-            <button className="btn" onClick={() => exportXlsmForMode(mode)}>Export to Excel</button>
-            <button className="btn" onClick={exportXlsxWithImages}>Export XLSX (with QR images)</button>
+            <button className="btn" onClick={() => exportXlsmForMode(mode)} disabled={exporting}>
+              {exporting ? 'Exporting…' : 'Export to Excel'}
+            </button>
+            <button className="btn" onClick={exportXlsxWithImages} disabled={exporting}>
+              {exporting ? 'Exporting…' : 'Export XLSX (with QR images)'}
+            </button>
           </div>
 
           {/* Damaged QR */}

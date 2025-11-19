@@ -328,16 +328,12 @@ export default function App() {
     };
 
     const onCleared = () => {
-      setScansMain([]);
-      setTotalMain(0);
-      setCursorMain(null);
+      setScansMain([]); setTotalMain(0); setCursorMain(null);
       setStatus('All scans cleared (Main, synced)');
     };
 
     const onClearedAlt = () => {
-      setScansAlt([]);
-      setTotalAlt(0);
-      setCursorAlt(null);
+      setScansAlt([]); setTotalAlt(0); setCursorAlt(null);
       setStatus('All scans cleared (ALT, synced)');
     };
 
@@ -832,9 +828,55 @@ export default function App() {
     }
   };
 
+  // ---------- EXPORT helpers (flush local queue BEFORE export) ----------
+  async function flushLocalQueueBeforeExport({ useAlt = false } = {}) {
+    try {
+      const m = useAlt ? 'alt' : 'main';
+      const items = await idbAll(m);
+      if (!items || items.length === 0) return { flushed: 0 };
+
+      const payload = items.map(x => x.payload || x);
+      const url = useAlt ? api('/scans-alt/bulk') : api('/scans/bulk');
+
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: payload }),
+      });
+
+      if (!resp.ok) {
+        const text = await resp.text().catch(()=> '');
+        console.warn('Bulk upload failed:', text || resp.status);
+        return { flushed: 0, error: text || `HTTP ${resp.status}` };
+      }
+
+      const body = await resp.json().catch(()=> ({}));
+      await idbClear(items.map(x => x.id), m);
+      return { flushed: payload.length, result: body };
+    } catch (e) {
+      console.warn('flushLocalQueueBeforeExport error:', e?.message || e);
+      return { flushed: 0, error: e?.message || String(e) };
+    }
+  }
+
   // Exports per mode (helper so StartPage can export without changing mode)
   const exportXlsmForMode = async (m) => {
     try {
+      setStatus('Preparing export — syncing local queue...');
+      const flush = await flushLocalQueueBeforeExport({ useAlt: modeIsAlt(m) });
+      if (flush.error) {
+        // let user decide to continue
+        const ok = confirm('Failed to sync offline scans to server. Continue export (server may be missing recent scans)?');
+        if (!ok) {
+          setStatus('Export cancelled (sync failed)');
+          return;
+        }
+      } else if (flush.flushed > 0) {
+        setStatus(`Flushed ${flush.flushed} local scans — exporting...`);
+      } else {
+        setStatus('No local queued scans — exporting server data...');
+      }
+
       const resp = await fetch(api(endpoints.exportXlsm(m)), { method: 'POST' });
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
@@ -858,10 +900,23 @@ export default function App() {
       setStatus('Export failed');
     }
   };
-  const exportXlsm = () => exportXlsmForMode(mode);
 
   const exportXlsxWithImages = async () => {
     try {
+      setStatus('Preparing export (images) — syncing local queue...');
+      const flush = await flushLocalQueueBeforeExport({ useAlt: modeIsAlt(mode) });
+      if (flush.error) {
+        const ok = confirm('Failed to sync offline scans to server. Continue export (server may be missing recent scans)?');
+        if (!ok) {
+          setStatus('Export cancelled (sync failed)');
+          return;
+        }
+      } else if (flush.flushed > 0) {
+        setStatus(`Flushed ${flush.flushed} local scans — exporting...`);
+      } else {
+        setStatus('No local queued scans — exporting server data...');
+      }
+
       const resp = await fetch(api(endpoints.exportXlsxImages(mode)), { method: 'POST' });
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
@@ -921,10 +976,15 @@ export default function App() {
       <div style={{ minHeight: '100vh', background: '#fff' }}>
         <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
           <StartPage
+            // new API
             onStartMain={() => { setMode('main'); setShowStart(false); }}
             onStartAlt={() => { setMode('alt'); setShowStart(false); }}
             onExportMain={() => exportXlsmForMode('main')}
             onExportAlt={() => exportXlsmForMode('alt')}
+            // backwards-compatible handlers (in case StartPage still uses old props)
+            onContinue={() => { setMode('main'); setShowStart(false); }}
+            onStartScan={() => { setMode('main'); setShowStart(false); }}
+            onExport={() => exportXlsmForMode('main')}
             operator={operator}
             setOperator={setOperator}
           />
@@ -1097,7 +1157,7 @@ export default function App() {
             >
               Discard
             </button>
-            <button className="btn" onClick={exportXlsm}>Export to Excel</button>
+            <button className="btn" onClick={() => exportXlsmForMode(mode)}>Export to Excel</button>
             <button className="btn" onClick={exportXlsxWithImages}>Export XLSX (with QR images)</button>
           </div>
 

@@ -1,5 +1,4 @@
-// src/App.jsx — Start page with working MAIN/ALT start buttons (no extra toggles),
-// password-protected clear buttons per mode, separate queues, duplicate detection, etc.
+// src/App.jsx — Main + ALT modes, password-protected clear buttons, separate queues
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { socket } from './socket';
 import Scanner from './scanner/Scanner.jsx';
@@ -7,17 +6,18 @@ import StartPage from './StartPage.jsx';
 import './app.css';
 import * as XLSX from 'xlsx';
 
+// ---------- API base ----------
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const api = (p) => {
   const path = p.startsWith('/') ? p : `/${p}`;
   return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
 };
 
+// ---------- Helpers for per-mode endpoints ----------
 const modeIsAlt = (m) => m === 'alt';
 const endpoints = {
   staged: (m) => modeIsAlt(m) ? '/staged-alt' : '/staged',
   stagedCount: (m) => modeIsAlt(m) ? '/staged-alt/count' : '/staged/count',
-  stagedDelete: (m, id) => (modeIsAlt(m) ? `/staged-alt/${id}` : `/staged/${id}`),
   scan: (m) => modeIsAlt(m) ? '/scan-alt' : '/scan',
   exists: (m, serial) => modeIsAlt(m) ? `/exists-alt/${encodeURIComponent(serial)}` : `/exists/${encodeURIComponent(serial)}`,
   clearAll: (m) => modeIsAlt(m) ? '/staged-alt/clear' : '/staged/clear',
@@ -25,6 +25,7 @@ const endpoints = {
   exportXlsxImages: (m) => modeIsAlt(m) ? '/export-alt-xlsx-images' : '/export-xlsx-images',
 };
 
+// ---------- Fixed values for Damaged QR ----------
 const FIXED_DAMAGED = {
   grade: 'SAR48',
   railType: 'R260',
@@ -32,50 +33,47 @@ const FIXED_DAMAGED = {
   lengthM: '36 m',
 };
 
+// ---------- QR parsing ----------
 function parseQrPayload(raw) {
   const clean = String(raw || '')
     .replace(/[^\x20-\x7E]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
-  // split but keep dashes inside tokens (some serials use dashes)
-  const tokens = clean.split(/[ \t\r\n|,:/]+/).filter(Boolean).map(t => t.trim());
-
-  // uppercased tokens for case-insensitive matching
-  const upTokens = tokens.map(t => t.toUpperCase());
+  const tokens = clean.split(/[ \t\r\n|,:/]+/).filter(Boolean);
 
   const serial =
-    upTokens.find((t) => /^[A-Z0-9-]{12,}$/.test(t)) ||
-    upTokens.find((t) => /^[A-Z0-9-]{8,}$/.test(t)) ||
+    tokens.find((t) => /^[A-Z0-9]{12,}$/.test(t)) ||
+    tokens.find((t) => /^[A-Z0-9]{8,}$/.test(t)) ||
     '';
 
-  let grade = (upTokens.find((t) => /^SAR\d{2}$/i.test(t)) || '').toUpperCase();
+  let grade = (tokens.find((t) => /^SAR\d{2}$/i.test(t)) || '').toUpperCase();
 
   let railType = '';
-  for (const t of upTokens) {
-    if (/^R\d{3}(?:L?HT)?$/.test(t)) { railType = t; break; }
+  for (const t of tokens) {
+    const u = t.toUpperCase();
+    if (/^R\d{3}(?:L?HT)?$/.test(u)) { railType = u; break; }
   }
 
   let spec = '';
-  for (let i = 0; i < upTokens.length; i++) {
-    const u = upTokens[i];
+  for (let i = 0; i < tokens.length; i++) {
+    const u = tokens[i].toUpperCase();
     if (/^(ATX|ATA|AREMA|UIC|EN\d*|GB\d*)$/.test(u)) {
-      const next = upTokens[i + 1] || '';
-      if (/^[A-Z0-9-]{3,}$/i.test(next)) spec = `${u} ${next}`;
-      else spec = u;
+      const next = tokens[i + 1] || '';
+      if (/^[A-Z0-9-]{3,}$/i.test(next)) spec = `${tokens[i]} ${next}`;
+      else spec = tokens[i];
       break;
     }
   }
 
-  const lengthM = upTokens.find((t) => /^\d{1,3}(\.\d+)?M$/i.test(t)) || '';
+  const lengthM = tokens.find((t) => /^\d{1,3}(\.\d+)?m$/i.test(t)) || '';
 
   if (grade && railType && grade === railType) grade = '';
 
-  // return raw as original cleaned (not uppercased) for qrRaw storage
-  return { raw: clean, serial: serial || '', grade, railType, spec, lengthM };
+  return { raw: clean, serial, grade, railType, spec, lengthM };
 }
 
-// IndexedDB queues (separate per mode)
+// ---------- IndexedDB offline queues (separate stores per mode) ----------
 const DB_NAME = 'rail-offline';
 const DB_VERSION = 2;
 const STORE_MAIN = 'queue_main';
@@ -130,14 +128,14 @@ async function idbClear(ids, mode) {
   });
 }
 
+// ---------- Component ----------
 export default function App() {
-  // Which dataset are we scanning right now?
-  const [mode, setMode] = useState('main'); // 'main' | 'alt'
-  const [showStart, setShowStart] = useState(true);
+  // Mode: 'main' | 'alt'
+  const [mode, setMode] = useState('main');
 
   const [status, setStatus] = useState('Ready');
 
-  // Separate lists & pagination for MAIN/ALT
+  // MAIN and ALT separate arrays & pagination
   const [scansMain, setScansMain] = useState([]);
   const [scansAlt, setScansAlt] = useState([]);
 
@@ -147,13 +145,16 @@ export default function App() {
   const [cursorMain, setCursorMain] = useState(null);
   const [cursorAlt, setCursorAlt] = useState(null);
 
-  // Active list helpers
+  // Derived current lists by mode
   const scans = modeIsAlt(mode) ? scansAlt : scansMain;
   const setScans = modeIsAlt(mode) ? setScansAlt : setScansMain;
   const totalCount = modeIsAlt(mode) ? totalAlt : totalMain;
   const setTotalCount = modeIsAlt(mode) ? setTotalAlt : setTotalMain;
   const nextCursor = modeIsAlt(mode) ? cursorAlt : cursorMain;
   const setNextCursor = modeIsAlt(mode) ? setCursorAlt : setCursorMain;
+
+  // Start page
+  const [showStart, setShowStart] = useState(true);
 
   // Controls
   const [operator, setOperator] = useState('Clerk A');
@@ -164,15 +165,15 @@ export default function App() {
   const [loadedAt] = useState('WalvisBay');
   const [destination, setDestination] = useState('');
 
-  // Pending capture
+  // pending scan
   const [pending, setPending] = useState(null);
   const [qrExtras, setQrExtras] = useState({ grade: '', railType: '', spec: '', lengthM: '' });
 
-  // Modals
+  // duplicate modal / remove modal
   const [dupPrompt, setDupPrompt] = useState(null);
   const [removePrompt, setRemovePrompt] = useState(null);
 
-  // Sound
+  // sound
   const audioCtxRef = useRef(null);
   const [soundOn, setSoundOn] = useState(false);
   const enableSound = async () => {
@@ -209,17 +210,21 @@ export default function App() {
   const warnBeep = () => playBeep(900, 90);
   const savedBeep = () => playBeep(2000, 140);
   useEffect(() => {
-    if (localStorage.getItem('rail-sound-enabled') === '1') enableSound();
+    if (localStorage.getItem('rail-sound-enabled') === '1') {
+      enableSound();
+    }
   }, []);
 
-  // Damaged QR
+  // Damaged QR UI
   const [showDamaged, setShowDamaged] = useState(false);
   const [manualSerial, setManualSerial] = useState('');
 
-  // Duplicate helpers
+  // duplicate helpers
   const normalizeSerial = (s) => String(s || '').trim().toUpperCase();
   const serialSetRefMain = useRef(new Set());
   const serialSetRefAlt = useRef(new Set());
+
+  // known serials from import (per mode)
   const knownMainRef = useRef(new Set());
   const knownAltRef = useRef(new Set());
   const [knownMainCount, setKnownMainCount] = useState(0);
@@ -237,7 +242,7 @@ export default function App() {
     return localSet.has(key) || knownSet.has(key);
   };
 
-  // Import known serials (per mode)
+  // Import known serials
   const importInputRef = useRef(null);
   const handleImportKnown = async (file) => {
     try {
@@ -266,6 +271,7 @@ export default function App() {
 
       setKnownMainCount(knownMainRef.current.size);
       setKnownAltCount(knownAltRef.current.size);
+
       setStatus(`Imported known serials (${mode.toUpperCase()}): ${set.size}`);
       savedBeep();
     } catch (e) {
@@ -277,7 +283,7 @@ export default function App() {
     }
   };
 
-  // Sockets
+  // Socket
   const socketRef = useRef(null);
   useEffect(() => {
     socketRef.current = socket;
@@ -332,12 +338,16 @@ export default function App() {
     };
 
     const onCleared = () => {
-      setScansMain([]); setTotalMain(0); setCursorMain(null);
+      setScansMain([]);
+      setTotalMain(0);
+      setCursorMain(null);
       setStatus('All scans cleared (Main, synced)');
     };
 
     const onClearedAlt = () => {
-      setScansAlt([]); setTotalAlt(0); setCursorAlt(null);
+      setScansAlt([]);
+      setTotalAlt(0);
+      setCursorAlt(null);
       setStatus('All scans cleared (ALT, synced)');
     };
 
@@ -369,7 +379,7 @@ export default function App() {
     };
   }, []);
 
-  // Build fast serial sets
+  // Build fast serial sets anytime lists change
   useEffect(() => {
     const s = new Set();
     for (const r of scansMain) if (r?.serial) s.add(normalizeSerial(r.serial));
@@ -381,7 +391,7 @@ export default function App() {
     serialSetRefAlt.current = s;
   }, [scansAlt]);
 
-  // Initial loads
+  // initial loads (once per mode)
   const mainLoadedRef = useRef(false);
   const altLoadedRef = useRef(false);
   useEffect(() => {
@@ -456,7 +466,7 @@ export default function App() {
     }
   };
 
-  // Flush offline queues when online (both modes)
+  // Flush offline queues (both modes) when online
   useEffect(() => {
     async function flushQueueForMode(m) {
       try {
@@ -464,6 +474,7 @@ export default function App() {
         if (items.length === 0) return;
         const payload = items.map(x => x.payload);
 
+        // bulk endpoint differs per mode
         const bulkPath = modeIsAlt(m) ? '/scans-alt/bulk' : '/scans/bulk';
         const resp = await fetch(api(bulkPath), {
           method: 'POST',
@@ -473,6 +484,7 @@ export default function App() {
         if (resp.ok) {
           await idbClear(items.map(x => x.id), m);
 
+          // reload first page for that mode
           const [countResp, pageResp] = await Promise.all([
             fetch(api(endpoints.stagedCount(m))),
             fetch(api(`${endpoints.staged(m)}?limit=${PAGE_SIZE}`)),
@@ -524,7 +536,7 @@ export default function App() {
   const localHasSerial = (serial) => scanSerialSet.has(normalizeSerial(serial));
   const findDuplicates = (serial) => scans.filter((r) => normalizeSerial(r.serial) === normalizeSerial(serial));
 
-  // highlight existing row
+  // highlight & scroll existing row
   const [flashSerial, setFlashSerial] = useState(null);
   const flashExistingRow = (serialKey) => {
     if (!serialKey) return;
@@ -536,7 +548,7 @@ export default function App() {
     setTimeout(() => setFlashSerial(null), 2500);
   };
 
-  // SCAN handler
+  // SCAN handler (honors mode)
   const onDetected = async (rawText) => {
     const parsed = parseQrPayload(rawText);
     const serial = (parsed.serial || rawText || '').trim();
@@ -552,13 +564,18 @@ export default function App() {
     if (lastHitRef.current.serial === serialKey && now - lastHitRef.current.at < 1200) return;
     lastHitRef.current = { serial: serialKey, at: now };
 
+    // union check (local + imported)
     if (isKnownDuplicate(serialKey)) {
       warnBeep();
       setDupPrompt({
         serial: serialKey,
         matches: findDuplicates(serialKey),
         candidate: {
-          pending: { serial: serialKey, raw: parsed.raw || String(rawText), capturedAt: new Date().toISOString() },
+          pending: {
+            serial: serialKey,
+            raw: parsed.raw || String(rawText),
+            capturedAt: new Date().toISOString(),
+          },
           qrExtras: {
             grade: parsed.grade || '',
             railType: parsed.railType || '',
@@ -572,6 +589,7 @@ export default function App() {
       return;
     }
 
+    // server exists check for this mode
     try {
       const resp = await fetch(api(endpoints.exists(mode, serialKey)));
       if (resp.ok) {
@@ -582,7 +600,11 @@ export default function App() {
             serial: serialKey,
             matches: [info.row || { serial: serialKey }],
             candidate: {
-              pending: { serial: serialKey, raw: parsed.raw || String(rawText), capturedAt: new Date().toISOString() },
+              pending: {
+                serial: serialKey,
+                raw: parsed.raw || String(rawText),
+                capturedAt: new Date().toISOString(),
+              },
               qrExtras: {
                 grade: parsed.grade || '',
                 railType: parsed.railType || '',
@@ -596,12 +618,14 @@ export default function App() {
           return;
         }
       }
-    } catch (err) {
-      console.warn('exists check failed:', err && err.message);
-    }
+    } catch {}
 
     okBeep();
-    setPending({ serial: serialKey, raw: parsed.raw || String(rawText), capturedAt: new Date().toISOString() });
+    setPending({
+      serial: serialKey,
+      raw: parsed.raw || String(rawText),
+      capturedAt: new Date().toISOString(),
+    });
     setQrExtras({
       grade: parsed.grade || '',
       railType: parsed.railType || '',
@@ -630,7 +654,7 @@ export default function App() {
   const confirmRemoveScan = async () => {
     if (!removePrompt) return;
     try {
-      const resp = await fetch(api(endpoints.stagedDelete(mode, removePrompt)), { method: 'DELETE' });
+      const resp = await fetch(api(`${endpoints.staged(mode)}/${removePrompt}`), { method: 'DELETE' });
       if (!resp.ok) {
         const errText = await resp.text().catch(() => '');
         throw new Error(errText || 'Failed to remove scan');
@@ -659,7 +683,7 @@ export default function App() {
       alert('Nothing to save yet. Scan a code first. If QR is damaged, use the Damaged QR dropdown.');
       return;
     }
-
+    // union duplicate re-check
     if (isKnownDuplicate(pending.serial)) {
       warnBeep();
       setDupPrompt({
@@ -672,6 +696,7 @@ export default function App() {
       return;
     }
 
+    // server exists
     try {
       const r = await fetch(api(endpoints.exists(mode, pending.serial)));
       if (r.ok) {
@@ -755,7 +780,11 @@ export default function App() {
         serial: serialKey,
         matches: findDuplicates(serialKey),
         candidate: {
-          pending: { serial: serialKey, raw: serialKey, capturedAt: new Date().toISOString() },
+          pending: {
+            serial: serialKey,
+            raw: serialKey,
+            capturedAt: new Date().toISOString(),
+          },
           qrExtras: {
             grade: FIXED_DAMAGED.grade,
             railType: FIXED_DAMAGED.railType,
@@ -808,10 +837,7 @@ export default function App() {
       setScans((prev) => [{ id: newId, ...rec }, ...prev ]);
       setTotalCount((c) => c + 1);
 
-      const set = getKnownRef().current;
-      set.add(serialKey);
-      setKnownMainCount(knownMainRef.current.size);
-      setKnownAltCount(knownAltRef.current.size);
+      pushKnownForMode(rec.serial);
 
       setManualSerial('');
       setShowDamaged(false);
@@ -822,10 +848,7 @@ export default function App() {
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev ]);
       setTotalCount((c) => c + 1);
 
-      const set = getKnownRef().current;
-      set.add(serialKey);
-      setKnownMainCount(knownMainRef.current.size);
-      setKnownAltCount(knownAltRef.current.size);
+      pushKnownForMode(rec.serial);
 
       setManualSerial('');
       setShowDamaged(false);
@@ -834,69 +857,17 @@ export default function App() {
     }
   };
 
-  // ---------- EXPORT helpers (flush local queue BEFORE export) ----------
-  async function flushLocalQueueBeforeExport({ useAlt = false } = {}) {
+  // Export (per mode)
+  const exportXlsm = async () => {
     try {
-      const m = useAlt ? 'alt' : 'main';
-      const items = await idbAll(m);
-      if (!items || items.length === 0) return { flushed: 0 };
-
-      const payload = items.map(x => x.payload || x);
-      const url = useAlt ? api('/scans-alt/bulk') : api('/scans/bulk');
-
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: payload }),
-      });
-
-      if (!resp.ok) {
-        const text = await resp.text().catch(()=> '');
-        console.warn('Bulk upload failed:', text || resp.status);
-        return { flushed: 0, error: text || `HTTP ${resp.status}` };
-      }
-
-      const body = await resp.json().catch(()=> ({}));
-      await idbClear(items.map(x => x.id), m);
-      console.log(`[flushLocalQueueBeforeExport] flushed ${payload.length} items for mode=${m}`);
-      return { flushed: payload.length, result: body };
-    } catch (e) {
-      console.warn('flushLocalQueueBeforeExport error:', e?.message || e);
-      return { flushed: 0, error: e?.message || String(e) };
-    }
-  }
-
-  // Exporting state to prevent double-click races
-  const [exporting, setExporting] = useState(false);
-
-  // Exports per mode (helper so StartPage can export without changing mode)
-  const exportXlsmForMode = async (m) => {
-    if (exporting) return;
-    setExporting(true);
-    try {
-      setStatus('Preparing export — syncing local queue...');
-      const flush = await flushLocalQueueBeforeExport({ useAlt: modeIsAlt(m) });
-      if (flush.error) {
-        // let user decide to continue
-        const ok = confirm('Failed to sync offline scans to server. Continue export (server may be missing recent scans)?');
-        if (!ok) {
-          setStatus('Export cancelled (sync failed)');
-          return;
-        }
-      } else if (flush.flushed > 0) {
-        setStatus(`Flushed ${flush.flushed} local scans — exporting...`);
-      } else {
-        setStatus('No local queued scans — exporting server data...');
-      }
-
-      const resp = await fetch(api(endpoints.exportXlsm(m)), { method: 'POST' });
+      const resp = await fetch(api(endpoints.exportXlsm(mode)), { method: 'POST' });
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
         throw new Error(text || `HTTP ${resp.status}`);
       }
       const dispo = resp.headers.get('Content-Disposition') || '';
       const match = dispo.match(/filename="?([^"]+)"?/i);
-      const filename = match?.[1] || `${modeIsAlt(m) ? 'Alt' : 'Master'}_${Date.now()}.xlsm`;
+      const filename = match?.[1] || `${modeIsAlt(mode) ? 'Alt' : 'Master'}_${Date.now()}.xlsm`;
 
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
@@ -910,29 +881,11 @@ export default function App() {
       console.error('Export failed:', e);
       alert(`Export failed: ${e.message}`);
       setStatus('Export failed');
-    } finally {
-      setExporting(false);
     }
   };
 
   const exportXlsxWithImages = async () => {
-    if (exporting) return;
-    setExporting(true);
     try {
-      setStatus('Preparing export (images) — syncing local queue...');
-      const flush = await flushLocalQueueBeforeExport({ useAlt: modeIsAlt(mode) });
-      if (flush.error) {
-        const ok = confirm('Failed to sync offline scans to server. Continue export (server may be missing recent scans)?');
-        if (!ok) {
-          setStatus('Export cancelled (sync failed)');
-          return;
-        }
-      } else if (flush.flushed > 0) {
-        setStatus(`Flushed ${flush.flushed} local scans — exporting...`);
-      } else {
-        setStatus('No local queued scans — exporting server data...');
-      }
-
       const resp = await fetch(api(endpoints.exportXlsxImages(mode)), { method: 'POST' });
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
@@ -954,20 +907,17 @@ export default function App() {
       console.error('Export (images) failed:', e);
       alert(`Export (images) failed: ${e.message}`);
       setStatus('Export (images) failed');
-    } finally {
-      setExporting(false);
     }
   };
 
-  // Password-protected clear for current mode (require typed password + confirm)
+  // Password-protected clear buttons (Main & Alt)
   const clearAllForCurrentMode = async () => {
-    const pw = window.prompt(`Type the CLEAR password to clear ALL ${mode.toUpperCase()} scans:`); // simple UX
-    if (pw == null) return;
+    const pw = window.prompt(`Enter password to clear ALL ${mode.toUpperCase()} scans:`);
+    if (pw == null) return; // cancelled
     if (pw !== 'confirm1234') {
       alert('Incorrect password.');
       return;
     }
-    if (!confirm(`This will PERMANENTLY delete ALL ${mode.toUpperCase()} staged scans. Continue?`)) return;
     try {
       const resp = await fetch(api(endpoints.clearAll(mode)), { method: 'POST' });
       if (!resp.ok) {
@@ -995,18 +945,28 @@ export default function App() {
       <div style={{ minHeight: '100vh', background: '#fff' }}>
         <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
           <StartPage
-            // new API
-            onStartMain={() => { setMode('main'); setShowStart(false); }}
-            onStartAlt={() => { setMode('alt'); setShowStart(false); }}
-            onExportMain={() => exportXlsmForMode('main')}
-            onExportAlt={() => exportXlsmForMode('alt')}
-            // backwards-compatible handlers (in case StartPage still uses old props)
-            onContinue={() => { setMode('main'); setShowStart(false); }}
-            onStartScan={() => { setMode('main'); setShowStart(false); }}
-            onExport={() => exportXlsmForMode('main')}
+            onContinue={() => setShowStart(false)}
+            onExport={exportXlsm}
             operator={operator}
             setOperator={setOperator}
           />
+          {/* Quick toggle to ALT from start if needed */}
+          <div className="card" style={{ marginTop: 12, display: 'flex', gap: 12 }}>
+            <button
+              className={`btn ${mode === 'main' ? '' : 'btn-outline'}`}
+              onClick={() => setMode('main')}
+              title="Work on Main sheet"
+            >
+              Use MAIN
+            </button>
+            <button
+              className={`btn ${mode === 'alt' ? '' : 'btn-outline'}`}
+              onClick={() => setMode('alt')}
+              title="Work on ALT sheet"
+            >
+              Use ALT (separate)
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -1027,7 +987,6 @@ export default function App() {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn btn-outline" onClick={() => setShowStart(true)}>Back to Start</button>
 
-            {/* Keep header mode toggle (optional). Remove if you don't want toggling after start */}
             <div className="btn-group" role="group" aria-label="mode">
               <button
                 className={`btn ${mode === 'main' ? '' : 'btn-outline'}`}
@@ -1063,6 +1022,7 @@ export default function App() {
               }}
             />
 
+            {/* Password-protected clear buttons per current mode */}
             <button
               className="btn btn-outline"
               onClick={clearAllForCurrentMode}
@@ -1176,12 +1136,8 @@ export default function App() {
             >
               Discard
             </button>
-            <button className="btn" onClick={() => exportXlsmForMode(mode)} disabled={exporting}>
-              {exporting ? 'Exporting…' : 'Export to Excel'}
-            </button>
-            <button className="btn" onClick={exportXlsxWithImages} disabled={exporting}>
-              {exporting ? 'Exporting…' : 'Export XLSX (with QR images)'}
-            </button>
+            <button className="btn" onClick={exportXlsm}>Export to Excel</button>
+            <button className="btn" onClick={exportXlsxWithImages}>Export XLSX (with QR images)</button>
           </div>
 
           {/* Damaged QR */}
@@ -1254,7 +1210,8 @@ export default function App() {
                 data-serial={(s.serial || '').toString().trim().toUpperCase()}
                 style={{
                   background:
-                    (flashSerial && (s.serial || '').toString().trim().toUpperCase() === flashSerial)
+                    flashSerial &&
+                    (s.serial || '').toString().trim().toUpperCase() === flashSerial
                       ? '#fff3cd'
                       : undefined,
                   transition: 'background 0.3s ease',
@@ -1317,9 +1274,7 @@ export default function App() {
               <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(220,38,38,.1)', color: 'rgb(220,38,38)', fontSize: 22 }}>⚠️</div>
               <div style={{ flex: 1 }}>
                 <h3 style={{ margin: 0 }}>Are you sure?</h3>
-                <div className="status" style={{ marginTop: 6 }}>
-                  Remove this staged scan from the {mode.toUpperCase()} list?
-                </div>
+                <div className="status" style={{ marginTop: 6 }}>Remove this staged scan from the {mode.toUpperCase()} list?</div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
                   <button className="btn btn-outline" onClick={discardRemovePrompt}>Cancel</button>
                   <button className="btn" onClick={confirmRemoveScan}>Confirm</button>

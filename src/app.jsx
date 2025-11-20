@@ -7,6 +7,10 @@ import StartPage from './StartPage.jsx';
 import './app.css';
 import * as XLSX from 'xlsx';
 
+// NEW imports for image-enabled export
+import ExcelJS from 'exceljs/dist/exceljs.min.js'; // exceljs browser build
+import { saveAs } from 'file-saver';
+
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const api = (p) => {
   const path = p.startsWith('/') ? p : `/${p}`;
@@ -328,16 +332,12 @@ export default function App() {
     };
 
     const onCleared = () => {
-      setScansMain([]);
-      setTotalMain(0);
-      setCursorMain(null);
+      setScansMain([]); setTotalMain(0); setCursorMain(null);
       setStatus('All scans cleared (Main, synced)');
     };
 
     const onClearedAlt = () => {
-      setScansAlt([]);
-      setTotalAlt(0);
-      setCursorAlt(null);
+      setScansAlt([]); setTotalAlt(0); setCursorAlt(null);
       setStatus('All scans cleared (ALT, synced)');
     };
 
@@ -483,7 +483,7 @@ export default function App() {
             ...r,
             wagonId1: r.wagon1Id ?? r.wagonId1 ?? '',
             wagonId2: r.wagon2Id ?? r.wagonId2 ?? '',
-            wagonId3: r.wagon3Id ?? r.wagonId3 ?? '',
+            wagonId3: r.wagonId3 ?? r.wagonId3 ?? '',
             receivedAt: r.receivedAt ?? r.recievedAt ?? '',
             loadedAt: r.loadedAt ?? '',
             destination: r.destination ?? r.dest ?? '',
@@ -832,16 +832,15 @@ export default function App() {
     }
   };
 
-  // ---------- UPDATED EXPORTS (client-side, do NOT call server export endpoints) ----------
+  // ---------- EXPORT helpers (client-side) ----------
   const [exporting, setExporting] = useState(false);
 
   // Helper to fetch staged rows from server (non-destructive)
   async function fetchAllStagedRows(m) {
-    // try to request many rows; server should return full dataset or paginated. We request a large limit.
     const rows = [];
     try {
       let cursor = null;
-      const limit = 1000; // page size
+      const limit = 1000;
       while (true) {
         const url = api(`${endpoints.staged(m)}?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
         const resp = await fetch(url);
@@ -853,7 +852,7 @@ export default function App() {
             ...r,
             wagonId1: r.wagon1Id ?? r.wagonId1 ?? '',
             wagonId2: r.wagon2Id ?? r.wagonId2 ?? '',
-            wagonId3: r.wagon3Id ?? r.wagonId3 ?? '',
+            wagonId3: r.wagonId3 ?? r.wagonId3 ?? '',
             receivedAt: r.receivedAt ?? r.recievedAt ?? '',
             loadedAt: r.loadedAt ?? '',
             destination: r.destination ?? r.dest ?? '',
@@ -869,28 +868,179 @@ export default function App() {
     return rows;
   }
 
-  // Build a worksheet from staged rows and download as XLSX (client-side). This will NOT clear server-side staged scans.
-  const exportClientXlsx = async (m, filenameHint) => {
+  // tries to find an image field in row (common names)
+  function findImageFieldName(row) {
+    const candidates = ['qrImage', 'qr_image', 'image', 'qrImageUrl', 'qr_image_url', 'imageUrl', 'image_url', 'qr_photo', 'qr_photo_url'];
+    for (const c of candidates) {
+      if (row[c]) return c;
+    }
+    // fallback: find first field containing 'qr' and 'img' or 'image'
+    for (const k of Object.keys(row)) {
+      const low = k.toLowerCase();
+      if (low.includes('qr') && (low.includes('img') || low.includes('image') || low.includes('photo') || low.includes('url'))) return k;
+    }
+    return null;
+  }
+
+  // fetch an image (url) and return arrayBuffer
+  async function fetchImageAsArrayBuffer(url) {
+    try {
+      // handle relative server urls
+      const absolute = url.startsWith('http') ? url : `${API_BASE || ''}${url.startsWith('/') ? '' : '/'}${url}`;
+      const r = await fetch(absolute);
+      if (!r.ok) throw new Error(`Image fetch failed (${r.status})`);
+      const ab = await r.arrayBuffer();
+      return ab;
+    } catch (e) {
+      console.warn('fetchImageAsArrayBuffer failed:', e);
+      return null;
+    }
+  }
+
+  // Export with embedded images using ExcelJS
+  const exportXlsxWithImages = async () => {
     if (exporting) return;
     setExporting(true);
     try {
-      setStatus('Preparing export (client-side)...');
-      const rows = await fetchAllStagedRows(m);
+      setStatus('Preparing export (with images)...');
+
+      const rows = await fetchAllStagedRows(mode);
       if (!rows || rows.length === 0) {
-        alert('No staged rows available for export.');
+        alert('No staged rows to export.');
         setStatus('No rows to export');
         return;
       }
 
-      // Normalize rows for Excel: pick fields and ensure consistent column order
-      const sheetRows = rows.map((r) => ({
+      // create workbook & sheet
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet('Staged');
+
+      // Define columns (you can tweak order/headers)
+      ws.columns = [
+        { header: 'ID', key: 'id', width: 12 },
+        { header: 'Serial', key: 'serial', width: 24 },
+        { header: 'Stage', key: 'stage', width: 14 },
+        { header: 'Operator', key: 'operator', width: 18 },
+        { header: 'Wagon 1', key: 'wagon1Id', width: 14 },
+        { header: 'Wagon 2', key: 'wagon2Id', width: 14 },
+        { header: 'Wagon 3', key: 'wagon3Id', width: 14 },
+        { header: 'Received At', key: 'receivedAt', width: 18 },
+        { header: 'Loaded At', key: 'loadedAt', width: 18 },
+        { header: 'Destination', key: 'destination', width: 22 },
+        { header: 'Grade', key: 'grade', width: 12 },
+        { header: 'Rail Type', key: 'railType', width: 12 },
+        { header: 'Spec', key: 'spec', width: 18 },
+        { header: 'Length', key: 'lengthM', width: 10 },
+        { header: 'QR Raw', key: 'qrRaw', width: 30 },
+        { header: 'Timestamp', key: 'timestamp', width: 22 },
+        { header: 'QR Image', key: 'qrImage', width: 18 }, // placeholder column for the image
+      ];
+
+      // Add header row styles (optional)
+      ws.getRow(1).font = { bold: true };
+
+      // We'll add rows first, then images anchored to rows
+      const imageFieldCache = {}; // rowIndex -> imageId (ExcelJS)
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+
+        // push row values (ExcelJS will create the row)
+        const rowNumber = i + 2; // because header is row 1
+        ws.addRow({
+          id: r.id ?? '',
+          serial: r.serial ?? '',
+          stage: r.stage ?? '',
+          operator: r.operator ?? '',
+          wagon1Id: r.wagonId1 ?? r.wagonId1 ?? '',
+          wagon2Id: r.wagonId2 ?? r.wagonId2 ?? '',
+          wagon3Id: r.wagonId3 ?? r.wagonId3 ?? '',
+          receivedAt: r.receivedAt ?? '',
+          loadedAt: r.loadedAt ?? '',
+          destination: r.destination ?? '',
+          grade: r.grade ?? '',
+          railType: r.railType ?? '',
+          spec: r.spec ?? '',
+          lengthM: r.lengthM ?? '',
+          qrRaw: r.qrRaw ?? '',
+          timestamp: r.timestamp ?? '',
+          qrImage: '', // image will be placed visually here
+        });
+
+        // find image field name if present
+        const imgField = findImageFieldName(r);
+        if (!imgField) continue;
+
+        const imgUrl = r[imgField];
+        if (!imgUrl) continue;
+
+        // fetch the image bytes
+        const ab = await fetchImageAsArrayBuffer(imgUrl);
+        if (!ab) continue;
+
+        // add image to workbook and note id
+        let mimeType = 'image/png';
+        // try to deduce mime from url extension
+        const ext = String(imgUrl).split('.').pop()?.toLowerCase() || '';
+        if (ext === 'jpg' || ext === 'jpeg') mimeType = 'image/jpeg';
+        else if (ext === 'gif') mimeType = 'image/gif';
+        else if (ext === 'png') mimeType = 'image/png';
+
+        // ExcelJS expects Buffer (node) or Uint8Array/ArrayBuffer in browser - we have ArrayBuffer
+        const imageId = wb.addImage({
+          buffer: ab,
+          extension: ext === 'jpg' ? 'jpeg' : ext || 'png',
+        });
+
+        // anchor image into the cell in the QR Image column for this row
+        // column index for qrImage is last column (we set as 16 above) - compute it:
+        const qrImageCol = ws.columns.findIndex(c => c.key === 'qrImage') + 1; // 1-based
+        if (qrImageCol <= 0) continue;
+
+        // set row height so the image has room
+        const rowObj = ws.getRow(rowNumber);
+        rowObj.height = 60; // points
+
+        // position: top-left of the cell to bottom-right (span 1 col x 1 row)
+        ws.addImage(imageId, {
+          tl: { col: qrImageCol - 1 + 0.1, row: rowNumber - 1 + 0.12 },
+          ext: { width: 80, height: 50 },
+        });
+      }
+
+      // finalize workbook to buffer
+      const buf = await wb.xlsx.writeBuffer();
+
+      const filename = `${modeIsAlt(mode) ? 'Alt_QR' : 'Master_QR'}_${new Date().toISOString().replace(/[:.]/g, '-')}.xlsx`;
+      saveAs(new Blob([buf], { type: 'application/octet-stream' }), filename);
+      setStatus(`Exported ${filename} (with images)`);
+    } catch (e) {
+      console.error('Export with images failed:', e);
+      alert(`Export (with images) failed: ${e.message || e}`);
+      setStatus('Export (images) failed');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // Also keep non-image Excel client export (simple table)
+  const exportXlsmForMode = async (m) => {
+    try {
+      setStatus('Preparing export — syncing local queue...');
+      // keep the previous client-side simple export behavior for non-image export
+      const respRows = await fetchAllStagedRows(m);
+      if (!respRows || respRows.length === 0) {
+        alert('No staged rows available for export.');
+        setStatus('No rows to export');
+        return;
+      }
+      const sheetRows = respRows.map((r) => ({
         id: r.id ?? '',
         serial: r.serial ?? '',
         stage: r.stage ?? '',
         operator: r.operator ?? '',
         wagon1Id: r.wagon1Id ?? '',
-        wagon2Id: r.wagonId2 ?? r.wagonId2 ?? '',
-        wagon3Id: r.wagonId3 ?? '',
+        wagon2Id: r.wagon2Id ?? r.wagonId2 ?? '',
+        wagon3Id: r.wagon3Id ?? '',
         receivedAt: r.receivedAt ?? '',
         loadedAt: r.loadedAt ?? '',
         destination: r.destination ?? '',
@@ -901,42 +1051,22 @@ export default function App() {
         qrRaw: r.qrRaw ?? '',
         timestamp: r.timestamp ?? '',
       }));
-
       const ws = XLSX.utils.json_to_sheet(sheetRows, { header: [
         'id','serial','stage','operator','wagon1Id','wagon2Id','wagon3Id','receivedAt','loadedAt','destination',
         'grade','railType','spec','lengthM','qrRaw','timestamp'
       ]});
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Staged');
-
-      const filename = filenameHint || `${modeIsAlt(m) ? 'Alt' : 'Master'}_staged_${new Date().toISOString().replace(/[:.]/g,'-')}.xlsx`;
-
-      // write and trigger download in browser
+      const filename = `${modeIsAlt(m) ? 'Alt' : 'Master'}_staged_${new Date().toISOString().replace(/[:.]/g,'-')}.xlsx`;
       XLSX.writeFile(wb, filename);
-
-      setStatus(`Exported ${filename} (client-side)`);
+      setStatus(`Exported ${filename}`);
     } catch (e) {
-      console.error('Client export failed:', e);
-      alert(`Export failed: ${e.message || e}`);
+      console.error('Export failed:', e);
+      alert(`Export failed: ${e.message}`);
       setStatus('Export failed');
-    } finally {
-      setExporting(false);
     }
   };
-
-  // Public handlers used by UI — keep names similar
-  const exportXlsmForMode = async (m) => {
-    // Attempt client-side export; if server-side .xlsm is strictly required, call server endpoint (but that may clear scans).
-    // Here we explicitly avoid calling server export endpoints to prevent server-side clearing.
-    await exportClientXlsx(m, `${modeIsAlt(m) ? 'Alt' : 'Master'}_staged_${new Date().toISOString().replace(/[:.]/g,'-')}.xlsx`);
-  };
   const exportXlsm = () => exportXlsmForMode(mode);
-
-  const exportXlsxWithImages = async () => {
-    // Note: embedding images into XLSX client-side is non-trivial and not supported directly by xlsx in all browsers.
-    // This function exports the same tabular data; images can be attached separately if needed.
-    await exportClientXlsx(mode, `${modeIsAlt(mode) ? 'Alt_QR' : 'Master_QR'}_${new Date().toISOString().replace(/[:.]/g,'-')}.xlsx`);
-  };
 
   // Password-protected clear for current mode
   const clearAllForCurrentMode = async () => {

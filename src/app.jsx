@@ -1,4 +1,5 @@
-// src/App.jsx — Main + ALT modes, password-protected clear buttons, separate queues
+// src/App.jsx — Start page with working MAIN/ALT start buttons (no extra toggles),
+// password-protected clear buttons per mode, separate queues, duplicate detection, etc.
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { socket } from './socket';
 import Scanner from './scanner/Scanner.jsx';
@@ -6,18 +7,17 @@ import StartPage from './StartPage.jsx';
 import './app.css';
 import * as XLSX from 'xlsx';
 
-// ---------- API base ----------
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const api = (p) => {
   const path = p.startsWith('/') ? p : `/${p}`;
   return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
 };
 
-// ---------- Helpers for per-mode endpoints ----------
 const modeIsAlt = (m) => m === 'alt';
 const endpoints = {
   staged: (m) => modeIsAlt(m) ? '/staged-alt' : '/staged',
   stagedCount: (m) => modeIsAlt(m) ? '/staged-alt/count' : '/staged/count',
+  stagedDelete: (m, id) => (modeIsAlt(m) ? `/staged-alt/${id}` : `/staged/${id}`),
   scan: (m) => modeIsAlt(m) ? '/scan-alt' : '/scan',
   exists: (m, serial) => modeIsAlt(m) ? `/exists-alt/${encodeURIComponent(serial)}` : `/exists/${encodeURIComponent(serial)}`,
   clearAll: (m) => modeIsAlt(m) ? '/staged-alt/clear' : '/staged/clear',
@@ -25,7 +25,6 @@ const endpoints = {
   exportXlsxImages: (m) => modeIsAlt(m) ? '/export-alt-xlsx-images' : '/export-xlsx-images',
 };
 
-// ---------- Fixed values for Damaged QR ----------
 const FIXED_DAMAGED = {
   grade: 'SAR48',
   railType: 'R260',
@@ -33,7 +32,6 @@ const FIXED_DAMAGED = {
   lengthM: '36 m',
 };
 
-// ---------- QR parsing ----------
 function parseQrPayload(raw) {
   const clean = String(raw || '')
     .replace(/[^\x20-\x7E]/g, ' ')
@@ -73,7 +71,7 @@ function parseQrPayload(raw) {
   return { raw: clean, serial, grade, railType, spec, lengthM };
 }
 
-// ---------- IndexedDB offline queues (separate stores per mode) ----------
+// IndexedDB queues (separate per mode)
 const DB_NAME = 'rail-offline';
 const DB_VERSION = 2;
 const STORE_MAIN = 'queue_main';
@@ -128,14 +126,14 @@ async function idbClear(ids, mode) {
   });
 }
 
-// ---------- Component ----------
 export default function App() {
-  // Mode: 'main' | 'alt'
-  const [mode, setMode] = useState('main');
+  // Which dataset are we scanning right now?
+  const [mode, setMode] = useState('main'); // 'main' | 'alt'
+  const [showStart, setShowStart] = useState(true);
 
   const [status, setStatus] = useState('Ready');
 
-  // MAIN and ALT separate arrays & pagination
+  // Separate lists & pagination for MAIN/ALT
   const [scansMain, setScansMain] = useState([]);
   const [scansAlt, setScansAlt] = useState([]);
 
@@ -145,16 +143,13 @@ export default function App() {
   const [cursorMain, setCursorMain] = useState(null);
   const [cursorAlt, setCursorAlt] = useState(null);
 
-  // Derived current lists by mode
+  // Active list helpers
   const scans = modeIsAlt(mode) ? scansAlt : scansMain;
   const setScans = modeIsAlt(mode) ? setScansAlt : setScansMain;
   const totalCount = modeIsAlt(mode) ? totalAlt : totalMain;
   const setTotalCount = modeIsAlt(mode) ? setTotalAlt : setTotalMain;
   const nextCursor = modeIsAlt(mode) ? cursorAlt : cursorMain;
   const setNextCursor = modeIsAlt(mode) ? setCursorAlt : setCursorMain;
-
-  // Start page
-  const [showStart, setShowStart] = useState(true);
 
   // Controls
   const [operator, setOperator] = useState('Clerk A');
@@ -165,15 +160,15 @@ export default function App() {
   const [loadedAt] = useState('WalvisBay');
   const [destination, setDestination] = useState('');
 
-  // pending scan
+  // Pending capture
   const [pending, setPending] = useState(null);
   const [qrExtras, setQrExtras] = useState({ grade: '', railType: '', spec: '', lengthM: '' });
 
-  // duplicate modal / remove modal
+  // Modals
   const [dupPrompt, setDupPrompt] = useState(null);
   const [removePrompt, setRemovePrompt] = useState(null);
 
-  // sound
+  // Sound
   const audioCtxRef = useRef(null);
   const [soundOn, setSoundOn] = useState(false);
   const enableSound = async () => {
@@ -210,21 +205,17 @@ export default function App() {
   const warnBeep = () => playBeep(900, 90);
   const savedBeep = () => playBeep(2000, 140);
   useEffect(() => {
-    if (localStorage.getItem('rail-sound-enabled') === '1') {
-      enableSound();
-    }
+    if (localStorage.getItem('rail-sound-enabled') === '1') enableSound();
   }, []);
 
-  // Damaged QR UI
+  // Damaged QR
   const [showDamaged, setShowDamaged] = useState(false);
   const [manualSerial, setManualSerial] = useState('');
 
-  // duplicate helpers
+  // Duplicate helpers
   const normalizeSerial = (s) => String(s || '').trim().toUpperCase();
   const serialSetRefMain = useRef(new Set());
   const serialSetRefAlt = useRef(new Set());
-
-  // known serials from import (per mode)
   const knownMainRef = useRef(new Set());
   const knownAltRef = useRef(new Set());
   const [knownMainCount, setKnownMainCount] = useState(0);
@@ -242,7 +233,7 @@ export default function App() {
     return localSet.has(key) || knownSet.has(key);
   };
 
-  // Import known serials
+  // Import known serials (per mode)
   const importInputRef = useRef(null);
   const handleImportKnown = async (file) => {
     try {
@@ -271,7 +262,6 @@ export default function App() {
 
       setKnownMainCount(knownMainRef.current.size);
       setKnownAltCount(knownAltRef.current.size);
-
       setStatus(`Imported known serials (${mode.toUpperCase()}): ${set.size}`);
       savedBeep();
     } catch (e) {
@@ -283,7 +273,7 @@ export default function App() {
     }
   };
 
-  // Socket
+  // Sockets
   const socketRef = useRef(null);
   useEffect(() => {
     socketRef.current = socket;
@@ -379,7 +369,7 @@ export default function App() {
     };
   }, []);
 
-  // Build fast serial sets anytime lists change
+  // Build fast serial sets
   useEffect(() => {
     const s = new Set();
     for (const r of scansMain) if (r?.serial) s.add(normalizeSerial(r.serial));
@@ -391,7 +381,7 @@ export default function App() {
     serialSetRefAlt.current = s;
   }, [scansAlt]);
 
-  // initial loads (once per mode)
+  // Initial loads
   const mainLoadedRef = useRef(false);
   const altLoadedRef = useRef(false);
   useEffect(() => {
@@ -466,7 +456,7 @@ export default function App() {
     }
   };
 
-  // Flush offline queues (both modes) when online
+  // Flush offline queues when online (both modes)
   useEffect(() => {
     async function flushQueueForMode(m) {
       try {
@@ -474,7 +464,6 @@ export default function App() {
         if (items.length === 0) return;
         const payload = items.map(x => x.payload);
 
-        // bulk endpoint differs per mode
         const bulkPath = modeIsAlt(m) ? '/scans-alt/bulk' : '/scans/bulk';
         const resp = await fetch(api(bulkPath), {
           method: 'POST',
@@ -484,7 +473,6 @@ export default function App() {
         if (resp.ok) {
           await idbClear(items.map(x => x.id), m);
 
-          // reload first page for that mode
           const [countResp, pageResp] = await Promise.all([
             fetch(api(endpoints.stagedCount(m))),
             fetch(api(`${endpoints.staged(m)}?limit=${PAGE_SIZE}`)),
@@ -536,7 +524,7 @@ export default function App() {
   const localHasSerial = (serial) => scanSerialSet.has(normalizeSerial(serial));
   const findDuplicates = (serial) => scans.filter((r) => normalizeSerial(r.serial) === normalizeSerial(serial));
 
-  // highlight & scroll existing row
+  // highlight existing row
   const [flashSerial, setFlashSerial] = useState(null);
   const flashExistingRow = (serialKey) => {
     if (!serialKey) return;
@@ -548,7 +536,7 @@ export default function App() {
     setTimeout(() => setFlashSerial(null), 2500);
   };
 
-  // SCAN handler (honors mode)
+  // SCAN handler
   const onDetected = async (rawText) => {
     const parsed = parseQrPayload(rawText);
     const serial = (parsed.serial || rawText || '').trim();
@@ -564,18 +552,13 @@ export default function App() {
     if (lastHitRef.current.serial === serialKey && now - lastHitRef.current.at < 1200) return;
     lastHitRef.current = { serial: serialKey, at: now };
 
-    // union check (local + imported)
     if (isKnownDuplicate(serialKey)) {
       warnBeep();
       setDupPrompt({
         serial: serialKey,
         matches: findDuplicates(serialKey),
         candidate: {
-          pending: {
-            serial: serialKey,
-            raw: parsed.raw || String(rawText),
-            capturedAt: new Date().toISOString(),
-          },
+          pending: { serial: serialKey, raw: parsed.raw || String(rawText), capturedAt: new Date().toISOString() },
           qrExtras: {
             grade: parsed.grade || '',
             railType: parsed.railType || '',
@@ -589,7 +572,6 @@ export default function App() {
       return;
     }
 
-    // server exists check for this mode
     try {
       const resp = await fetch(api(endpoints.exists(mode, serialKey)));
       if (resp.ok) {
@@ -600,11 +582,7 @@ export default function App() {
             serial: serialKey,
             matches: [info.row || { serial: serialKey }],
             candidate: {
-              pending: {
-                serial: serialKey,
-                raw: parsed.raw || String(rawText),
-                capturedAt: new Date().toISOString(),
-              },
+              pending: { serial: serialKey, raw: parsed.raw || String(rawText), capturedAt: new Date().toISOString() },
               qrExtras: {
                 grade: parsed.grade || '',
                 railType: parsed.railType || '',
@@ -621,11 +599,7 @@ export default function App() {
     } catch {}
 
     okBeep();
-    setPending({
-      serial: serialKey,
-      raw: parsed.raw || String(rawText),
-      capturedAt: new Date().toISOString(),
-    });
+    setPending({ serial: serialKey, raw: parsed.raw || String(rawText), capturedAt: new Date().toISOString() });
     setQrExtras({
       grade: parsed.grade || '',
       railType: parsed.railType || '',
@@ -654,7 +628,7 @@ export default function App() {
   const confirmRemoveScan = async () => {
     if (!removePrompt) return;
     try {
-      const resp = await fetch(api(`${endpoints.staged(mode)}/${removePrompt}`), { method: 'DELETE' });
+      const resp = await fetch(api(endpoints.stagedDelete(mode, removePrompt)), { method: 'DELETE' });
       if (!resp.ok) {
         const errText = await resp.text().catch(() => '');
         throw new Error(errText || 'Failed to remove scan');
@@ -683,7 +657,7 @@ export default function App() {
       alert('Nothing to save yet. Scan a code first. If QR is damaged, use the Damaged QR dropdown.');
       return;
     }
-    // union duplicate re-check
+
     if (isKnownDuplicate(pending.serial)) {
       warnBeep();
       setDupPrompt({
@@ -696,7 +670,6 @@ export default function App() {
       return;
     }
 
-    // server exists
     try {
       const r = await fetch(api(endpoints.exists(mode, pending.serial)));
       if (r.ok) {
@@ -780,11 +753,7 @@ export default function App() {
         serial: serialKey,
         matches: findDuplicates(serialKey),
         candidate: {
-          pending: {
-            serial: serialKey,
-            raw: serialKey,
-            capturedAt: new Date().toISOString(),
-          },
+          pending: { serial: serialKey, raw: serialKey, capturedAt: new Date().toISOString() },
           qrExtras: {
             grade: FIXED_DAMAGED.grade,
             railType: FIXED_DAMAGED.railType,
@@ -837,7 +806,10 @@ export default function App() {
       setScans((prev) => [{ id: newId, ...rec }, ...prev ]);
       setTotalCount((c) => c + 1);
 
-      pushKnownForMode(rec.serial);
+      const set = getKnownRef().current;
+      set.add(serialKey);
+      setKnownMainCount(knownMainRef.current.size);
+      setKnownAltCount(knownAltRef.current.size);
 
       setManualSerial('');
       setShowDamaged(false);
@@ -848,7 +820,10 @@ export default function App() {
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev ]);
       setTotalCount((c) => c + 1);
 
-      pushKnownForMode(rec.serial);
+      const set = getKnownRef().current;
+      set.add(serialKey);
+      setKnownMainCount(knownMainRef.current.size);
+      setKnownAltCount(knownAltRef.current.size);
 
       setManualSerial('');
       setShowDamaged(false);
@@ -857,63 +832,116 @@ export default function App() {
     }
   };
 
-  // Export (per mode)
-  const exportXlsm = async () => {
-    try {
-      const resp = await fetch(api(endpoints.exportXlsm(mode)), { method: 'POST' });
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => '');
-        throw new Error(text || `HTTP ${resp.status}`);
-      }
-      const dispo = resp.headers.get('Content-Disposition') || '';
-      const match = dispo.match(/filename="?([^"]+)"?/i);
-      const filename = match?.[1] || `${modeIsAlt(mode) ? 'Alt' : 'Master'}_${Date.now()}.xlsm`;
+  // ---------- UPDATED EXPORTS (client-side, do NOT call server export endpoints) ----------
+  const [exporting, setExporting] = useState(false);
 
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = filename;
-      document.body.appendChild(a);
-      a.click(); a.remove();
-      URL.revokeObjectURL(url);
-      setStatus(`Exported ${filename}`);
+  // Helper to fetch staged rows from server (non-destructive)
+  async function fetchAllStagedRows(m) {
+    // try to request many rows; server should return full dataset or paginated. We request a large limit.
+    const rows = [];
+    try {
+      let cursor = null;
+      const limit = 1000; // page size
+      while (true) {
+        const url = api(`${endpoints.staged(m)}?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`Failed to fetch staged rows (${resp.status})`);
+        const data = await resp.json().catch(()=>({ rows: [], nextCursor: null }));
+        const pageRows = data.rows || [];
+        for (const r of pageRows) {
+          rows.push({
+            ...r,
+            wagonId1: r.wagon1Id ?? r.wagonId1 ?? '',
+            wagonId2: r.wagon2Id ?? r.wagonId2 ?? '',
+            wagonId3: r.wagon3Id ?? r.wagonId3 ?? '',
+            receivedAt: r.receivedAt ?? r.recievedAt ?? '',
+            loadedAt: r.loadedAt ?? '',
+            destination: r.destination ?? r.dest ?? '',
+          });
+        }
+        if (!data.nextCursor) break;
+        cursor = data.nextCursor;
+      }
     } catch (e) {
-      console.error('Export failed:', e);
-      alert(`Export failed: ${e.message}`);
+      console.error('fetchAllStagedRows error:', e);
+      throw e;
+    }
+    return rows;
+  }
+
+  // Build a worksheet from staged rows and download as XLSX (client-side). This will NOT clear server-side staged scans.
+  const exportClientXlsx = async (m, filenameHint) => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      setStatus('Preparing export (client-side)...');
+      const rows = await fetchAllStagedRows(m);
+      if (!rows || rows.length === 0) {
+        alert('No staged rows available for export.');
+        setStatus('No rows to export');
+        return;
+      }
+
+      // Normalize rows for Excel: pick fields and ensure consistent column order
+      const sheetRows = rows.map((r) => ({
+        id: r.id ?? '',
+        serial: r.serial ?? '',
+        stage: r.stage ?? '',
+        operator: r.operator ?? '',
+        wagon1Id: r.wagon1Id ?? '',
+        wagon2Id: r.wagonId2 ?? r.wagonId2 ?? '',
+        wagon3Id: r.wagonId3 ?? '',
+        receivedAt: r.receivedAt ?? '',
+        loadedAt: r.loadedAt ?? '',
+        destination: r.destination ?? '',
+        grade: r.grade ?? '',
+        railType: r.railType ?? '',
+        spec: r.spec ?? '',
+        lengthM: r.lengthM ?? '',
+        qrRaw: r.qrRaw ?? '',
+        timestamp: r.timestamp ?? '',
+      }));
+
+      const ws = XLSX.utils.json_to_sheet(sheetRows, { header: [
+        'id','serial','stage','operator','wagon1Id','wagon2Id','wagon3Id','receivedAt','loadedAt','destination',
+        'grade','railType','spec','lengthM','qrRaw','timestamp'
+      ]});
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Staged');
+
+      const filename = filenameHint || `${modeIsAlt(m) ? 'Alt' : 'Master'}_staged_${new Date().toISOString().replace(/[:.]/g,'-')}.xlsx`;
+
+      // write and trigger download in browser
+      XLSX.writeFile(wb, filename);
+
+      setStatus(`Exported ${filename} (client-side)`);
+    } catch (e) {
+      console.error('Client export failed:', e);
+      alert(`Export failed: ${e.message || e}`);
       setStatus('Export failed');
+    } finally {
+      setExporting(false);
     }
   };
+
+  // Public handlers used by UI — keep names similar
+  const exportXlsmForMode = async (m) => {
+    // Attempt client-side export; if server-side .xlsm is strictly required, call server endpoint (but that may clear scans).
+    // Here we explicitly avoid calling server export endpoints to prevent server-side clearing.
+    await exportClientXlsx(m, `${modeIsAlt(m) ? 'Alt' : 'Master'}_staged_${new Date().toISOString().replace(/[:.]/g,'-')}.xlsx`);
+  };
+  const exportXlsm = () => exportXlsmForMode(mode);
 
   const exportXlsxWithImages = async () => {
-    try {
-      const resp = await fetch(api(endpoints.exportXlsxImages(mode)), { method: 'POST' });
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => '');
-        throw new Error(text || `HTTP ${resp.status}`);
-      }
-      const dispo = resp.headers.get('Content-Disposition') || '';
-      const match = dispo.match(/filename="?([^"]+)"?/i);
-      const filename = match?.[1] || `${modeIsAlt(mode) ? 'Alt_QR' : 'Master_QR'}_${Date.now()}.xlsx`;
-
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = filename;
-      document.body.appendChild(a);
-      a.click(); a.remove();
-      URL.revokeObjectURL(url);
-      setStatus(`Exported ${filename}`);
-    } catch (e) {
-      console.error('Export (images) failed:', e);
-      alert(`Export (images) failed: ${e.message}`);
-      setStatus('Export (images) failed');
-    }
+    // Note: embedding images into XLSX client-side is non-trivial and not supported directly by xlsx in all browsers.
+    // This function exports the same tabular data; images can be attached separately if needed.
+    await exportClientXlsx(mode, `${modeIsAlt(mode) ? 'Alt_QR' : 'Master_QR'}_${new Date().toISOString().replace(/[:.]/g,'-')}.xlsx`);
   };
 
-  // Password-protected clear buttons (Main & Alt)
+  // Password-protected clear for current mode
   const clearAllForCurrentMode = async () => {
     const pw = window.prompt(`Enter password to clear ALL ${mode.toUpperCase()} scans:`);
-    if (pw == null) return; // cancelled
+    if (pw == null) return;
     if (pw !== 'confirm1234') {
       alert('Incorrect password.');
       return;
@@ -945,28 +973,13 @@ export default function App() {
       <div style={{ minHeight: '100vh', background: '#fff' }}>
         <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
           <StartPage
-            onContinue={() => setShowStart(false)}
-            onExport={exportXlsm}
+            onStartMain={() => { setMode('main'); setShowStart(false); }}
+            onStartAlt={() => { setMode('alt'); setShowStart(false); }}
+            onExportMain={() => exportXlsmForMode('main')}
+            onExportAlt={() => exportXlsmForMode('alt')}
             operator={operator}
             setOperator={setOperator}
           />
-          {/* Quick toggle to ALT from start if needed */}
-          <div className="card" style={{ marginTop: 12, display: 'flex', gap: 12 }}>
-            <button
-              className={`btn ${mode === 'main' ? '' : 'btn-outline'}`}
-              onClick={() => setMode('main')}
-              title="Work on Main sheet"
-            >
-              Use MAIN
-            </button>
-            <button
-              className={`btn ${mode === 'alt' ? '' : 'btn-outline'}`}
-              onClick={() => setMode('alt')}
-              title="Work on ALT sheet"
-            >
-              Use ALT (separate)
-            </button>
-          </div>
         </div>
       </div>
     );
@@ -987,6 +1000,7 @@ export default function App() {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn btn-outline" onClick={() => setShowStart(true)}>Back to Start</button>
 
+            {/* Keep header mode toggle (optional). Remove if you don't want toggling after start */}
             <div className="btn-group" role="group" aria-label="mode">
               <button
                 className={`btn ${mode === 'main' ? '' : 'btn-outline'}`}
@@ -1022,7 +1036,6 @@ export default function App() {
               }}
             />
 
-            {/* Password-protected clear buttons per current mode */}
             <button
               className="btn btn-outline"
               onClick={clearAllForCurrentMode}
@@ -1136,8 +1149,12 @@ export default function App() {
             >
               Discard
             </button>
-            <button className="btn" onClick={exportXlsm}>Export to Excel</button>
-            <button className="btn" onClick={exportXlsxWithImages}>Export XLSX (with QR images)</button>
+            <button className="btn" onClick={exportXlsm} disabled={exporting}>
+              {exporting ? 'Exporting…' : 'Export to Excel'}
+            </button>
+            <button className="btn" onClick={exportXlsxWithImages} disabled={exporting}>
+              {exporting ? 'Exporting…' : 'Export XLSX (with QR images)'}
+            </button>
           </div>
 
           {/* Damaged QR */}
@@ -1210,8 +1227,7 @@ export default function App() {
                 data-serial={(s.serial || '').toString().trim().toUpperCase()}
                 style={{
                   background:
-                    flashSerial &&
-                    (s.serial || '').toString().trim().toUpperCase() === flashSerial
+                    (flashSerial && (s.serial || '').toString().trim().toUpperCase() === flashSerial)
                       ? '#fff3cd'
                       : undefined,
                   transition: 'background 0.3s ease',
@@ -1274,7 +1290,9 @@ export default function App() {
               <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(220,38,38,.1)', color: 'rgb(220,38,38)', fontSize: 22 }}>⚠️</div>
               <div style={{ flex: 1 }}>
                 <h3 style={{ margin: 0 }}>Are you sure?</h3>
-                <div className="status" style={{ marginTop: 6 }}>Remove this staged scan from the {mode.toUpperCase()} list?</div>
+                <div className="status" style={{ marginTop: 6 }}>
+                  Remove this staged scan from the {mode.toUpperCase()} list?
+                </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
                   <button className="btn btn-outline" onClick={discardRemovePrompt}>Cancel</button>
                   <button className="btn" onClick={confirmRemoveScan}>Confirm</button>

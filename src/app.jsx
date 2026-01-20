@@ -1,245 +1,120 @@
-import express from "express";
-import http from "http";
-import cors from "cors";
-import mysql from "mysql2/promise";
-import { Server } from "socket.io";
+// frontend.js
+// All API calls point to Render backend
+import { io } from "socket.io-client";
 
-const BACKEND_URL = "https://backend-test-5-1n52.onrender.com"; // Updated backend base URL
-
-const app = express();
-const server = http.createServer(app);
-
-const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST", "DELETE"] }
-});
-
-app.use(cors());
-app.use(express.json());
-
-/* ================= CONFIG ================= */
-
-const PORT = process.env.PORT || 10000;
-
-const DB_CONFIG = {
-  host: process.env.MYSQL_HOST,
-  port: Number(process.env.MYSQL_PORT || 3306),
-  user: process.env.MYSQL_USER,
-  password: process.env.MYSQL_PASSWORD,
-  database: process.env.MYSQL_DATABASE,
-  ssl: process.env.MYSQL_SSL === "true"
-};
-
-/* ================= STATE ================= */
-
-let pool;
-let dbReady = false;
-const offlineQueue = [];
-
-/* ================= DB ================= */
-
-async function connectDb() {
-  for (let i = 1; i <= 12; i++) {
-    try {
-      pool = mysql.createPool({
-        ...DB_CONFIG,
-        connectionLimit: 10,
-        waitForConnections: true
-      });
-      await pool.query("SELECT 1");
-      dbReady = true;
-      console.log("✅ DB ready");
-      flushOffline();
-      return;
-    } catch (e) {
-      console.log(`DB not ready (${i}/12)`, e.code);
-      await new Promise(r => setTimeout(r, 3000));
-    }
-  }
-}
-
-async function flushOffline() {
-  while (offlineQueue.length && dbReady) {
-    const job = offlineQueue.shift();
-    try {
-      await pool.query(job.sql, job.values);
-    } catch {
-      offlineQueue.unshift(job);
-      break;
-    }
-  }
-}
-
-function safeQuery(sql, values) {
-  if (!dbReady) {
-    offlineQueue.push({ sql, values });
-    return { queued: true };
-  }
-  return pool.query(sql, values);
-}
-
-function table(mode) {
-  return mode === "alt" ? "staged_alt" : "staged";
-}
-
-/* ================= HEALTH ================= */
-
-app.get("/api/health", (_req, res) => {
-  res.status(dbReady ? 200 : 503).json({
-    ok: dbReady,
-    queued: offlineQueue.length
-  });
-});
-
-/* ================= GET ================= */
-
-app.get("/api/staged", async (_req, res) => {
-  const [rows] = await pool.query(
-    "SELECT * FROM staged ORDER BY id DESC LIMIT 200"
-  );
-  res.json(rows);
-});
-
-app.get("/api/staged-alt", async (_req, res) => {
-  const [rows] = await pool.query(
-    "SELECT * FROM staged_alt ORDER BY id DESC LIMIT 200"
-  );
-  res.json(rows);
-});
-
-app.get("/api/staged/count", async (_req, res) => {
-  const [[r]] = await pool.query("SELECT COUNT(*) c FROM staged");
-  res.json({ count: r.c });
-});
-
-app.get("/api/staged-alt/count", async (_req, res) => {
-  const [[r]] = await pool.query("SELECT COUNT(*) c FROM staged_alt");
-  res.json({ count: r.c });
-});
-
-/* ================= EXISTS ================= */
-
-app.get("/api/exists/:serial", async (req, res) => {
-  const [[r]] = await pool.query(
-    "SELECT id FROM staged WHERE serial=? LIMIT 1",
-    [req.params.serial]
-  );
-  res.json({ exists: !!r });
-});
-
-app.get("/api/exists-alt/:serial", async (req, res) => {
-  const [[r]] = await pool.query(
-    "SELECT id FROM staged_alt WHERE serial=? LIMIT 1",
-    [req.params.serial]
-  );
-  res.json({ exists: !!r });
-});
-
-/* ================= INSERT ================= */
-
-function insertSQL(t) {
-  return `
-    INSERT INTO ${t}
-    (serial,wagonId1,wagonId2,wagonId3,operator,receivedAt,loadedAt,
-     destination,grade,railType,spec,lengthM,timestamp)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `;
-}
-
-app.post("/api/scan", async (req, res) => {
-  await safeQuery(insertSQL("staged"), Object.values(req.body));
-  io.emit("new-scan", req.body);
-  res.json({ ok: true });
-});
-
-app.post("/api/scan-alt", async (req, res) => {
-  await safeQuery(insertSQL("staged_alt"), Object.values(req.body));
-  io.emit("new-scan-alt", req.body);
-  res.json({ ok: true });
-});
-
-/* ================= BULK ================= */
-
-app.post("/api/scans/bulk", async (req, res) => {
-  for (const row of req.body) {
-    await safeQuery(insertSQL("staged"), Object.values(row));
-  }
-  io.emit("bulk-sync");
-  res.json({ ok: true });
-});
-
-app.post("/api/scans-alt/bulk", async (req, res) => {
-  for (const row of req.body) {
-    await safeQuery(insertSQL("staged_alt"), Object.values(row));
-  }
-  io.emit("bulk-sync-alt");
-  res.json({ ok: true });
-});
-
-/* ================= DELETE ================= */
-
-app.delete("/api/staged/:id", async (req, res) => {
-  await safeQuery("DELETE FROM staged WHERE id=?", [req.params.id]);
-  io.emit("deleted-scan", req.params.id);
-  res.json({ ok: true });
-});
-
-app.delete("/api/staged-alt/:id", async (req, res) => {
-  await safeQuery("DELETE FROM staged_alt WHERE id=?", [req.params.id]);
-  io.emit("deleted-scan-alt", req.params.id);
-  res.json({ ok: true });
-});
-
-/* ================= CLEAR ================= */
-
-app.post("/api/staged/clear", async (_req, res) => {
-  await safeQuery("DELETE FROM staged");
-  io.emit("cleared-scans");
-  res.json({ ok: true });
-});
-
-app.post("/api/staged-alt/clear", async (_req, res) => {
-  await safeQuery("DELETE FROM staged_alt");
-  io.emit("cleared-scans-alt");
-  res.json({ ok: true });
-});
-
-/* ================= EXPORT (HOOKS) ================= */
-
-app.post("/api/export-to-excel", (_req, res) =>
-  res.json({ ok: true, message: "Handled client-side" })
-);
-
-app.post("/api/export-alt-to-excel", (_req, res) =>
-  res.json({ ok: true })
-);
-
-app.post("/api/export-xlsx-images", (_req, res) =>
-  res.json({ ok: true })
-);
-
-app.post("/api/export-alt-xlsx-images", (_req, res) =>
-  res.json({ ok: true })
-);
+const BACKEND_URL = "https://backend-test-5-1n52.onrender.com"; // Render backend
 
 /* ================= SOCKET ================= */
 
-async function waitForHealth(timeout = 30000, interval = 1000) {
+async function waitForBackend(timeout = 30000, interval = 1000) {
   const start = Date.now();
   while (Date.now() - start < timeout) {
-    if (dbReady) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/health`);
+      if (res.ok) return true;
+    } catch (_) {
+      // ignore
+    }
     await new Promise(r => setTimeout(r, interval));
   }
+  throw new Error("Backend did not become ready in time");
 }
 
-io.on("connection", async socket => {
-  await waitForHealth(); // Wait for DB ready before allowing socket events
-  console.log("🔌 Socket connected", socket.id);
-});
+export async function createSocket() {
+  await waitForBackend();
+  const socket = io(BACKEND_URL, {
+    transports: ["websocket"],
+    autoConnect: true,
+  });
 
-/* ================= START ================= */
+  socket.on("connect", () => console.log("✅ Socket connected:", socket.id));
+  socket.on("connect_error", (err) => console.error("❌ Socket connection error:", err));
+  socket.on("disconnect", () => console.log("⚠️ Socket disconnected"));
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ Backend live on :${PORT}`);
-});
+  socket.on("new-scan", (data) => { /* handle MAIN scan */ });
+  socket.on("new-scan-alt", (data) => { /* handle ALT scan */ });
+  socket.on("deleted-scan", (id) => { /* handle MAIN delete */ });
+  socket.on("deleted-scan-alt", (id) => { /* handle ALT delete */ });
+  socket.on("cleared-scans", () => { /* handle MAIN clear */ });
+  socket.on("cleared-scans-alt", () => { /* handle ALT clear */ });
 
-connectDb();
+  return socket;
+}
+
+/* ================= API CALLS ================= */
+
+export async function fetchStaged(mode = "main", limit = 200) {
+  const path = mode === "alt" ? "/api/staged-alt" : "/api/staged";
+  const res = await fetch(`${BACKEND_URL}${path}?limit=${limit}`);
+  return res.json();
+}
+
+export async function fetchStagedCount(mode = "main") {
+  const path = mode === "alt" ? "/api/staged-alt/count" : "/api/staged/count";
+  const res = await fetch(`${BACKEND_URL}${path}`);
+  const json = await res.json();
+  return json.count;
+}
+
+export async function checkExists(serial, mode = "main") {
+  const path = mode === "alt" ? `/api/exists-alt/${serial}` : `/api/exists/${serial}`;
+  const res = await fetch(`${BACKEND_URL}${path}`);
+  const json = await res.json();
+  return json.exists;
+}
+
+export async function postScan(scanData, mode = "main") {
+  const path = mode === "alt" ? "/api/scan-alt" : "/api/scan";
+  const res = await fetch(`${BACKEND_URL}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(scanData),
+  });
+  return res.json();
+}
+
+export async function bulkScans(scans, mode = "main") {
+  const path = mode === "alt" ? "/api/scans-alt/bulk" : "/api/scans/bulk";
+  const res = await fetch(`${BACKEND_URL}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(scans),
+  });
+  return res.json();
+}
+
+export async function deleteScan(id, mode = "main") {
+  const path = mode === "alt" ? `/api/staged-alt/${id}` : `/api/staged/${id}`;
+  const res = await fetch(`${BACKEND_URL}${path}`, { method: "DELETE" });
+  return res.json();
+}
+
+export async function clearScans(mode = "main") {
+  const path = mode === "alt" ? "/api/staged-alt/clear" : "/api/staged/clear";
+  const res = await fetch(`${BACKEND_URL}${path}`, { method: "POST" });
+  return res.json();
+}
+
+export async function exportToExcel(mode = "main") {
+  const path = mode === "alt" ? "/api/export-alt-to-excel" : "/api/export-to-excel";
+  const res = await fetch(`${BACKEND_URL}${path}`, { method: "POST" });
+  return res.json();
+}
+
+export async function exportXlsxImages(mode = "main") {
+  const path = mode === "alt" ? "/api/export-alt-xlsx-images" : "/api/export-xlsx-images";
+  const res = await fetch(`${BACKEND_URL}${path}`, { method: "POST" });
+  return res.json();
+}
+
+/* ================= INIT ================= */
+
+let socket;
+(async () => {
+  try {
+    socket = await createSocket();
+    console.log("✅ Socket is ready");
+  } catch (err) {
+    console.error("❌ Failed to connect socket:", err);
+  }
+})();

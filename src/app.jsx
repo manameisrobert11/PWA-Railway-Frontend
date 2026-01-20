@@ -4,6 +4,8 @@ import cors from "cors";
 import mysql from "mysql2/promise";
 import { Server } from "socket.io";
 
+const BACKEND_URL = "https://backend-test-5-1n52.onrender.com"; // Updated backend base URL
+
 const app = express();
 const server = http.createServer(app);
 
@@ -221,7 +223,16 @@ app.post("/api/export-alt-xlsx-images", (_req, res) =>
 
 /* ================= SOCKET ================= */
 
-io.on("connection", socket => {
+async function waitForHealth(timeout = 30000, interval = 1000) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    if (dbReady) return;
+    await new Promise(r => setTimeout(r, interval));
+  }
+}
+
+io.on("connection", async socket => {
+  await waitForHealth(); // Wait for DB ready before allowing socket events
   console.log("🔌 Socket connected", socket.id);
 });
 

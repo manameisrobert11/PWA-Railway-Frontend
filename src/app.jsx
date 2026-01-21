@@ -14,7 +14,15 @@ import { saveAs } from 'file-saver';
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const api = (p) => {
   const path = p.startsWith('/') ? p : `/${p}`;
-  return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
+  // Always include /api prefix
+  if (API_BASE) {
+    // If API_BASE already ends with /api, don't add it again
+    if (API_BASE.endsWith('/api')) {
+      return `${API_BASE}${path}`;
+    }
+    return `${API_BASE}/api${path}`;
+  }
+  return `/api${path}`;
 };
 
 const modeIsAlt = (m) => m === 'alt';
@@ -1393,3 +1401,4 @@ export default function App() {
     </div>
   );
 }
+

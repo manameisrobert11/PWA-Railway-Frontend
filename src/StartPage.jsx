@@ -240,6 +240,7 @@ export default function StartPage({
   onExportAlt,
   operator,
   setOperator,
+  onOpenAdmin,
 }) {
   const [now, setNow] = useState(new Date());
   const [loading, setLoading] = useState(true);
@@ -528,6 +529,55 @@ export default function StartPage({
         <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)' }}>
           Tip: Set the operator here before you begin scanning.
         </p>
+      </section>
+      
+      {/* Admin Panel */}
+      <section className="card" style={{ 
+        display: 'flex', 
+        alignItems: 'center', 
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: 12,
+        background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)',
+        color: '#fff',
+      }}>
+        <div>
+          <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 24 }}>🛡️</span>
+            Admin Panel
+          </h3>
+          <p style={{ margin: '8px 0 0', fontSize: 13, opacity: 0.8 }}>
+            View history, audit log, and restore deleted scans
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onOpenAdmin}
+          style={{
+            padding: '10px 20px',
+            borderRadius: 8,
+            border: '2px solid rgba(255,255,255,0.3)',
+            background: 'rgba(255,255,255,0.1)',
+            color: '#fff',
+            fontSize: 14,
+            fontWeight: 600,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            transition: 'all 0.2s ease',
+          }}
+          onMouseOver={(e) => {
+            e.currentTarget.style.background = 'rgba(255,255,255,0.2)';
+            e.currentTarget.style.borderColor = 'rgba(255,255,255,0.5)';
+          }}
+          onMouseOut={(e) => {
+            e.currentTarget.style.background = 'rgba(255,255,255,0.1)';
+            e.currentTarget.style.borderColor = 'rgba(255,255,255,0.3)';
+          }}
+        >
+          Open Admin Panel →
+        </button>
       </section>
       
       {/* Footer */}

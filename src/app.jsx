@@ -1,10 +1,12 @@
 // src/App.jsx — Start page with working MAIN/ALT start buttons (no extra toggles),
 // password-protected clear buttons per mode, separate queues, duplicate detection, etc.
 // + OFFLINE IMPROVEMENTS: status indicator, pending count, manual sync button
+// + ADMIN PANEL: History & Audit Log
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { socket } from './socket';
 import Scanner from './scanner/Scanner.jsx';
 import StartPage from './StartPage.jsx';
+import AdminPanel, { addAuditEntry } from './AdminPanel.jsx';
 import './app.css';
 import * as XLSX from 'xlsx';
 
@@ -248,6 +250,7 @@ export default function App() {
   // Which dataset are we scanning right now?
   const [mode, setMode] = useState('main'); // 'main' | 'alt'
   const [showStart, setShowStart] = useState(true);
+  const [showAdmin, setShowAdmin] = useState(false);
 
   const [status, setStatus] = useState('Ready');
 
@@ -878,6 +881,10 @@ export default function App() {
 
   const confirmRemoveScan = async () => {
     if (!removePrompt) return;
+    
+    // Find the scan data before deleting (for audit log)
+    const scanToDelete = scans.find(s => s.id === removePrompt);
+    
     try {
       const resp = await fetch(api(endpoints.stagedDelete(mode, removePrompt)), { method: 'DELETE' });
       if (!resp.ok) {
@@ -886,6 +893,19 @@ export default function App() {
       }
       setScans((prev) => prev.filter((scan) => scan.id !== removePrompt));
       setTotalCount((c) => Math.max(0, c - 1));
+      
+      // Add to audit log
+      if (scanToDelete) {
+        addAuditEntry({
+          action: 'delete',
+          serial: scanToDelete.serial,
+          mode: mode,
+          operator: operator,
+          details: `Deleted from ${mode.toUpperCase()}`,
+          scanData: scanToDelete, // Store full data for potential restore
+        });
+      }
+      
       setRemovePrompt(null);
       setStatus('Scan removed successfully');
     } catch (e) {
@@ -973,6 +993,16 @@ export default function App() {
       setTotalCount((c) => c + 1);
 
       pushKnownForMode(rec.serial);
+      
+      // Add to audit log
+      addAuditEntry({
+        action: 'create',
+        serial: rec.serial,
+        mode: mode,
+        operator: rec.operator,
+        details: `Saved to ${mode.toUpperCase()}`,
+        scanData: { ...rec, id: newId },
+      });
 
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
@@ -987,6 +1017,16 @@ export default function App() {
       setTotalCount((c) => c + 1);
 
       pushKnownForMode(rec.serial);
+      
+      // Add to audit log (offline)
+      addAuditEntry({
+        action: 'create',
+        serial: rec.serial,
+        mode: mode,
+        operator: rec.operator,
+        details: `Saved offline (pending sync)`,
+        scanData: rec,
+      });
 
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
@@ -1423,6 +1463,10 @@ export default function App() {
       alert('Incorrect password.');
       return;
     }
+    
+    // Get count before clearing for audit log
+    const countBefore = modeIsAlt(mode) ? totalAlt : totalMain;
+    
     try {
       const resp = await fetch(api(endpoints.clearAll(mode)), { method: 'POST' });
       if (!resp.ok) {
@@ -1434,6 +1478,17 @@ export default function App() {
       } else {
         setScansMain([]); setTotalMain(0); setCursorMain(null);
       }
+      
+      // Add to audit log
+      addAuditEntry({
+        action: 'clear',
+        serial: null,
+        mode: mode,
+        operator: operator,
+        details: `Cleared all ${countBefore} scans from ${mode.toUpperCase()}`,
+        scanData: null,
+      });
+      
       setStatus(`${mode.toUpperCase()} scans cleared`);
       savedBeep();
     } catch (e) {
@@ -1445,6 +1500,18 @@ export default function App() {
   };
 
   // ---------- RENDER ----------
+  
+  // Show Admin Panel
+  if (showAdmin) {
+    return (
+      <div style={{ minHeight: '100vh', background: '#fff' }}>
+        <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
+          <AdminPanel onBack={() => setShowAdmin(false)} />
+        </div>
+      </div>
+    );
+  }
+  
   if (showStart) {
     return (
       <div style={{ minHeight: '100vh', background: '#fff' }}>
@@ -1459,6 +1526,7 @@ export default function App() {
             onExport={() => exportXlsmForMode('main')}
             operator={operator}
             setOperator={setOperator}
+            onOpenAdmin={() => setShowAdmin(true)}
           />
         </div>
       </div>

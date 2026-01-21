@@ -493,38 +493,7 @@ export default function StartPage({
         </section>
       </div>
       
-      {/* Charts Row */}
-      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
-        <section className="card">
-          <h3 style={{ margin: '0 0 8px 0', fontSize: 15 }}>Rail Type Breakdown</h3>
-          {loading ? (
-            <div style={{ color: 'var(--muted)', fontSize: 14 }}>Loading...</div>
-          ) : analytics.railTypeData.length > 0 ? (
-            <BarChart data={analytics.railTypeData} title="" color="#3b82f6" />
-          ) : (
-            <div style={{ color: 'var(--muted)', fontSize: 13 }}>No data yet</div>
-          )}
-          
-          <div style={{ marginTop: 16 }}>
-            <BarChart 
-              data={analytics.gradeData} 
-              title="By Grade" 
-              color="#8b5cf6" 
-            />
-          </div>
-        </section>
-        
-        <section className="card">
-          <h3 style={{ margin: '0 0 8px 0', fontSize: 15 }}>Destinations</h3>
-          {loading ? (
-            <div style={{ color: 'var(--muted)', fontSize: 14 }}>Loading...</div>
-          ) : analytics.destinationData.length > 0 ? (
-            <BarChart data={analytics.destinationData} title="" color="#f59e0b" />
-          ) : (
-            <div style={{ color: 'var(--muted)', fontSize: 13 }}>No destinations set</div>
-          )}
-        </section>
-      </div>
+
       
       {/* Recent Activity */}
       <section className="card">

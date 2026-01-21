@@ -1,6 +1,7 @@
 // src/App.jsx — Start page with working MAIN/ALT start buttons (no extra toggles),
 // password-protected clear buttons per mode, separate queues, duplicate detection, etc.
-import React, { useEffect, useState, useRef, useMemo } from 'react';
+// + OFFLINE IMPROVEMENTS: status indicator, pending count, manual sync button
+import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { socket } from './socket';
 import Scanner from './scanner/Scanner.jsx';
 import StartPage from './StartPage.jsx';
@@ -141,12 +142,123 @@ async function idbClear(ids, mode) {
   });
 }
 
+// ==================== OFFLINE STATUS INDICATOR COMPONENT ====================
+function OfflineIndicator({ isOnline, pendingCount, isSyncing, onManualSync }) {
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8,
+      padding: '6px 12px',
+      borderRadius: 8,
+      background: isOnline ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+      border: `1px solid ${isOnline ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+    }}>
+      {/* Status dot */}
+      <div style={{
+        width: 8,
+        height: 8,
+        borderRadius: '50%',
+        background: isOnline ? '#22c55e' : '#ef4444',
+        boxShadow: isOnline ? '0 0 6px #22c55e' : '0 0 6px #ef4444',
+        animation: isOnline ? 'none' : 'pulse 2s infinite',
+      }} />
+      
+      {/* Status text */}
+      <span style={{
+        fontSize: 12,
+        fontWeight: 600,
+        color: isOnline ? '#22c55e' : '#ef4444',
+      }}>
+        {isOnline ? 'Online' : 'Offline'}
+      </span>
+      
+      {/* Pending count badge */}
+      {pendingCount > 0 && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 4,
+          padding: '2px 8px',
+          borderRadius: 12,
+          background: '#f59e0b',
+          color: '#fff',
+          fontSize: 11,
+          fontWeight: 700,
+        }}>
+          <span>⏳</span>
+          <span>{pendingCount} pending</span>
+        </div>
+      )}
+      
+      {/* Manual sync button */}
+      {pendingCount > 0 && isOnline && (
+        <button
+          onClick={onManualSync}
+          disabled={isSyncing}
+          style={{
+            padding: '4px 10px',
+            borderRadius: 6,
+            border: 'none',
+            background: isSyncing ? '#94a3b8' : '#3b82f6',
+            color: '#fff',
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: isSyncing ? 'not-allowed' : 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+          }}
+        >
+          {isSyncing ? (
+            <>
+              <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>↻</span>
+              Syncing...
+            </>
+          ) : (
+            <>
+              <span>↑</span>
+              Sync Now
+            </>
+          )}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Add CSS animation for pulse and spin
+const styleSheet = document.createElement('style');
+styleSheet.textContent = `
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+`;
+if (!document.querySelector('style[data-offline-indicator]')) {
+  styleSheet.setAttribute('data-offline-indicator', 'true');
+  document.head.appendChild(styleSheet);
+}
+
 export default function App() {
   // Which dataset are we scanning right now?
   const [mode, setMode] = useState('main'); // 'main' | 'alt'
   const [showStart, setShowStart] = useState(true);
 
   const [status, setStatus] = useState('Ready');
+
+  // ==================== OFFLINE STATE ====================
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [pendingMainCount, setPendingMainCount] = useState(0);
+  const [pendingAltCount, setPendingAltCount] = useState(0);
+  const [isSyncing, setIsSyncing] = useState(false);
+  
+  const totalPendingCount = pendingMainCount + pendingAltCount;
+  const currentModePendingCount = modeIsAlt(mode) ? pendingAltCount : pendingMainCount;
 
   // Separate lists & pagination for MAIN/ALT
   const [scansMain, setScansMain] = useState([]);
@@ -221,6 +333,7 @@ export default function App() {
   const okBeep = () => playBeep(1500, 80);
   const warnBeep = () => playBeep(900, 90);
   const savedBeep = () => playBeep(2000, 140);
+  const syncBeep = () => playBeep(1800, 120); // New beep for successful sync
 
   useEffect(() => {
     if (localStorage.getItem('rail-sound-enabled') === '1') enableSound();
@@ -251,6 +364,47 @@ export default function App() {
     const knownSet = getKnownRef().current;
     return localSet.has(key) || knownSet.has(key);
   };
+
+  // ==================== UPDATE PENDING COUNTS ====================
+  const updatePendingCounts = useCallback(async () => {
+    try {
+      const mainItems = await idbAll('main');
+      const altItems = await idbAll('alt');
+      setPendingMainCount(mainItems.length);
+      setPendingAltCount(altItems.length);
+    } catch (e) {
+      console.warn('Failed to get pending counts:', e);
+    }
+  }, []);
+
+  // ==================== ONLINE/OFFLINE LISTENERS ====================
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      setStatus('Back online — ready to sync');
+    };
+    
+    const handleOffline = () => {
+      setIsOnline(false);
+      setStatus('You are offline — scans will be saved locally');
+      warnBeep();
+    };
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    // Initial pending count
+    updatePendingCounts();
+    
+    // Update pending counts periodically
+    const interval = setInterval(updatePendingCounts, 5000);
+    
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      clearInterval(interval);
+    };
+  }, [updatePendingCounts]);
 
   // Import known serials (per mode)
   const importInputRef = useRef(null);
@@ -473,62 +627,108 @@ export default function App() {
     }
   };
 
-  // Flush offline queues when online (both modes)
-  useEffect(() => {
-    async function flushQueueForMode(m) {
-      try {
-        const items = await idbAll(m);
-        if (items.length === 0) return;
-        const payload = items.map(x => x.payload);
+  // ==================== FLUSH QUEUE FUNCTION (ENHANCED) ====================
+  const flushQueueForMode = useCallback(async (m) => {
+    try {
+      const items = await idbAll(m);
+      if (items.length === 0) return { flushed: 0 };
+      
+      const payload = items.map(x => x.payload);
+      const bulkPath = modeIsAlt(m) ? '/scans-alt/bulk' : '/scans/bulk';
+      
+      const resp = await fetch(api(bulkPath), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: payload })
+      });
+      
+      if (resp.ok) {
+        await idbClear(items.map(x => x.id), m);
+        
+        // Refresh data from server
+        const [countResp, pageResp] = await Promise.all([
+          fetch(api(endpoints.stagedCount(m))),
+          fetch(api(`${endpoints.staged(m)}?limit=${PAGE_SIZE}`)),
+        ]);
+        const countData = await countResp.json().catch(()=>({count:0}));
+        const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
+        const normalized = (pageData.rows || []).map((r) => ({
+          ...r,
+          wagonId1: r.wagon1Id ?? r.wagonId1 ?? '',
+          wagonId2: r.wagon2Id ?? r.wagonId2 ?? '',
+          wagonId3: r.wagonId3 ?? r.wagonId3 ?? '',
+          receivedAt: r.receivedAt ?? r.recievedAt ?? '',
+          loadedAt: r.loadedAt ?? '',
+          destination: r.destination ?? r.dest ?? '',
+        }));
 
-        const bulkPath = modeIsAlt(m) ? '/scans-alt/bulk' : '/scans/bulk';
-        const resp = await fetch(api(bulkPath), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ items: payload })
-        });
-        if (resp.ok) {
-          await idbClear(items.map(x => x.id), m);
-
-          const [countResp, pageResp] = await Promise.all([
-            fetch(api(endpoints.stagedCount(m))),
-            fetch(api(`${endpoints.staged(m)}?limit=${PAGE_SIZE}`)),
-          ]);
-          const countData = await countResp.json().catch(()=>({count:0}));
-          const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
-          const normalized = (pageData.rows || []).map((r) => ({
-            ...r,
-            wagonId1: r.wagon1Id ?? r.wagonId1 ?? '',
-            wagonId2: r.wagon2Id ?? r.wagonId2 ?? '',
-            wagonId3: r.wagonId3 ?? r.wagonId3 ?? '',
-            receivedAt: r.receivedAt ?? r.recievedAt ?? '',
-            loadedAt: r.loadedAt ?? '',
-            destination: r.destination ?? r.dest ?? '',
-          }));
-
-          if (modeIsAlt(m)) {
-            setScansAlt(normalized);
-            setCursorAlt(pageData.nextCursor ?? null);
-            setTotalAlt(pageData.total ?? normalized.length);
-          } else {
-            setScansMain(normalized);
-            setCursorMain(pageData.nextCursor ?? null);
-            setTotalMain(pageData.total ?? normalized.length);
-          }
+        if (modeIsAlt(m)) {
+          setScansAlt(normalized);
+          setCursorAlt(pageData.nextCursor ?? null);
+          setTotalAlt(pageData.total ?? normalized.length);
+        } else {
+          setScansMain(normalized);
+          setCursorMain(pageData.nextCursor ?? null);
+          setTotalMain(pageData.total ?? normalized.length);
         }
-      } catch (e) {
-        console.warn(`Offline queue flush failed (${m}):`, e.message);
+        
+        return { flushed: items.length };
       }
+      
+      return { flushed: 0, error: 'Server returned error' };
+    } catch (e) {
+      console.warn(`Offline queue flush failed (${m}):`, e.message);
+      return { flushed: 0, error: e.message };
     }
+  }, []);
 
+  // ==================== MANUAL SYNC FUNCTION ====================
+  const handleManualSync = useCallback(async () => {
+    if (!isOnline || isSyncing) return;
+    
+    setIsSyncing(true);
+    setStatus('Syncing offline scans...');
+    
+    try {
+      const mainResult = await flushQueueForMode('main');
+      const altResult = await flushQueueForMode('alt');
+      
+      const totalFlushed = (mainResult.flushed || 0) + (altResult.flushed || 0);
+      
+      await updatePendingCounts();
+      
+      if (totalFlushed > 0) {
+        setStatus(`✓ Synced ${totalFlushed} offline scan${totalFlushed > 1 ? 's' : ''}`);
+        syncBeep();
+      } else if (mainResult.error || altResult.error) {
+        setStatus('Sync failed — will retry later');
+        warnBeep();
+      } else {
+        setStatus('No pending scans to sync');
+      }
+    } catch (e) {
+      console.error('Manual sync failed:', e);
+      setStatus('Sync failed — please try again');
+      warnBeep();
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [isOnline, isSyncing, flushQueueForMode, updatePendingCounts]);
+
+  // Flush offline queues when online (both modes) - AUTO SYNC
+  useEffect(() => {
     async function flushBoth() {
+      if (!isOnline) return;
       await flushQueueForMode('main');
       await flushQueueForMode('alt');
+      await updatePendingCounts();
     }
+    
     window.addEventListener('online', flushBoth);
     flushBoth();
+    
     return () => window.removeEventListener('online', flushBoth);
-  }, []);
+  }, [isOnline, flushQueueForMode, updatePendingCounts]);
 
   // FLUSH helper used before export
   async function flushLocalQueueBeforeExport({ useAlt = false } = {}) {
@@ -554,6 +754,7 @@ export default function App() {
 
       const body = await resp.json().catch(()=> ({}));
       await idbClear(items.map(x => x.id), m);
+      await updatePendingCounts();
       return { flushed: payload.length, result: body };
     } catch (e) {
       console.warn('flushLocalQueueBeforeExport error:', e?.message || e);
@@ -778,7 +979,10 @@ export default function App() {
       setStatus(`Saved to staged (${mode.toUpperCase()})`);
       savedBeep();
     } catch (e) {
+      // Save offline
       await idbAdd({ payload: rec }, mode);
+      await updatePendingCounts(); // Update pending count
+      
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
       setTotalCount((c) => c + 1);
 
@@ -867,7 +1071,10 @@ export default function App() {
       setStatus(`Damaged QR saved (${mode.toUpperCase()})`);
       savedBeep();
     } catch (e) {
+      // Save offline
       await idbAdd({ payload: rec }, mode);
+      await updatePendingCounts(); // Update pending count
+      
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev ]);
       setTotalCount((c) => c + 1);
 
@@ -1070,6 +1277,14 @@ export default function App() {
           </div>
 
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {/* ==================== OFFLINE INDICATOR ==================== */}
+            <OfflineIndicator
+              isOnline={isOnline}
+              pendingCount={totalPendingCount}
+              isSyncing={isSyncing}
+              onManualSync={handleManualSync}
+            />
+            
             <button className="btn btn-outline" onClick={() => setShowStart(true)}>Back to Start</button>
 
             <div className="btn-group" role="group" aria-label="mode">
@@ -1079,6 +1294,19 @@ export default function App() {
                 title="Switch to MAIN"
               >
                 MAIN
+                {pendingMainCount > 0 && (
+                  <span style={{
+                    marginLeft: 4,
+                    padding: '1px 5px',
+                    borderRadius: 8,
+                    background: '#f59e0b',
+                    color: '#fff',
+                    fontSize: 10,
+                    fontWeight: 700,
+                  }}>
+                    {pendingMainCount}
+                  </span>
+                )}
               </button>
               <button
                 className={`btn ${mode === 'alt' ? '' : 'btn-outline'}`}
@@ -1086,6 +1314,19 @@ export default function App() {
                 title="Switch to ALT"
               >
                 ALT
+                {pendingAltCount > 0 && (
+                  <span style={{
+                    marginLeft: 4,
+                    padding: '1px 5px',
+                    borderRadius: 8,
+                    background: '#f59e0b',
+                    color: '#fff',
+                    fontSize: 10,
+                    fontWeight: 700,
+                  }}>
+                    {pendingAltCount}
+                  </span>
+                )}
               </button>
             </div>
 
@@ -1289,7 +1530,22 @@ export default function App() {
 
         {/* Staged Scans */}
         <section className="card">
-          <h3>Staged Scans ({totalCount}) — {mode.toUpperCase()}</h3>
+          <h3>
+            Staged Scans ({totalCount}) — {mode.toUpperCase()}
+            {currentModePendingCount > 0 && (
+              <span style={{
+                marginLeft: 8,
+                padding: '2px 8px',
+                borderRadius: 8,
+                background: '#f59e0b',
+                color: '#fff',
+                fontSize: 12,
+                fontWeight: 600,
+              }}>
+                +{currentModePendingCount} pending sync
+              </span>
+            )}
+          </h3>
           <div className="list">
             {scans.map((s) => (
               <div
@@ -1401,4 +1657,3 @@ export default function App() {
     </div>
   );
 }
-

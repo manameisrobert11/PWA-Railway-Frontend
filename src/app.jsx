@@ -1126,15 +1126,139 @@ export default function App() {
     return rows;
   }
 
-  // Exports per mode
+  // Helper: Export data to Excel locally (works offline)
+  const exportLocalToExcel = async (rows, filenamePrefix) => {
+    try {
+      const HEADERS = [
+        'Serial', 'Stage', 'Operator',
+        'Wagon1ID', 'Wagon2ID', 'Wagon3ID',
+        'ReceivedAt', 'LoadedAt', 'Destination',
+        'Grade', 'RailType', 'Spec', 'Length',
+        'QRRaw', 'Timestamp'
+      ];
+      
+      const dataRows = rows.map(s => ([
+        s.serial || '',
+        s.stage || '',
+        s.operator || '',
+        s.wagon1Id || s.wagonId1 || '',
+        s.wagon2Id || s.wagonId2 || '',
+        s.wagon3Id || s.wagonId3 || '',
+        s.receivedAt || '',
+        s.loadedAt || '',
+        s.destination || '',
+        s.grade || '',
+        s.railType || '',
+        s.spec || '',
+        s.lengthM || '',
+        s.qrRaw || '',
+        s.timestamp || '',
+      ]));
+      
+      const aoa = [HEADERS, ...dataRows];
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Scans');
+      
+      const filename = `${filenamePrefix}_${new Date().toISOString().replace(/[:.]/g, '-')}.xlsx`;
+      XLSX.writeFile(wb, filename);
+      
+      return { success: true, filename, count: rows.length };
+    } catch (e) {
+      console.error('Local export failed:', e);
+      return { success: false, error: e.message };
+    }
+  };
+
+  // Exports per mode (handles offline)
   const exportXlsmForMode = async (m) => {
     try {
+      // Get offline items for this mode
+      const offlineItems = await idbAll(m);
+      const offlineRows = offlineItems.map(x => x.payload || x);
+      
+      // If we're offline, export locally
+      if (!isOnline) {
+        setStatus('Offline — exporting local data...');
+        
+        // Combine displayed scans + offline queue
+        const displayedScans = modeIsAlt(m) ? scansAlt : scansMain;
+        
+        // Merge: offline items might already be in displayed scans, so dedupe by serial
+        const seenSerials = new Set();
+        const allRows = [];
+        
+        // Add displayed scans first
+        for (const scan of displayedScans) {
+          const key = normalizeSerial(scan.serial);
+          if (key && !seenSerials.has(key)) {
+            seenSerials.add(key);
+            allRows.push(scan);
+          }
+        }
+        
+        // Add offline items that aren't already included
+        for (const row of offlineRows) {
+          const key = normalizeSerial(row.serial);
+          if (key && !seenSerials.has(key)) {
+            seenSerials.add(key);
+            allRows.push(row);
+          }
+        }
+        
+        if (allRows.length === 0) {
+          alert('No scans to export.');
+          setStatus('No scans to export');
+          return;
+        }
+        
+        const result = await exportLocalToExcel(allRows, modeIsAlt(m) ? 'Alt_Offline' : 'Master_Offline');
+        
+        if (result.success) {
+          setStatus(`Exported ${result.count} scans (offline) — ${result.filename}`);
+          savedBeep();
+        } else {
+          throw new Error(result.error);
+        }
+        return;
+      }
+      
+      // Online: Try to sync first, then export from server
       setStatus('Preparing export — syncing local queue...');
       const flush = await flushLocalQueueBeforeExport({ useAlt: modeIsAlt(m) });
       if (flush.error) {
-        const ok = confirm('Failed to sync offline scans to server. Continue export (server may be missing recent scans)?');
-        if (!ok) {
-          setStatus('Export cancelled (sync failed)');
+        const ok = confirm('Failed to sync offline scans to server. Export local data instead?');
+        if (ok) {
+          // Fall back to local export
+          const displayedScans = modeIsAlt(m) ? scansAlt : scansMain;
+          const seenSerials = new Set();
+          const allRows = [];
+          
+          for (const scan of displayedScans) {
+            const key = normalizeSerial(scan.serial);
+            if (key && !seenSerials.has(key)) {
+              seenSerials.add(key);
+              allRows.push(scan);
+            }
+          }
+          for (const row of offlineRows) {
+            const key = normalizeSerial(row.serial);
+            if (key && !seenSerials.has(key)) {
+              seenSerials.add(key);
+              allRows.push(row);
+            }
+          }
+          
+          const result = await exportLocalToExcel(allRows, modeIsAlt(m) ? 'Alt_Local' : 'Master_Local');
+          if (result.success) {
+            setStatus(`Exported ${result.count} scans (local) — ${result.filename}`);
+            savedBeep();
+          } else {
+            throw new Error(result.error);
+          }
+          return;
+        } else {
+          setStatus('Export cancelled');
           return;
         }
       } else if (flush.flushed > 0) {
@@ -1172,13 +1296,90 @@ export default function App() {
   const exportXlsxWithImages = async () => {
     if (exporting) return;
     setExporting(true);
+    
     try {
+      // Get offline items for current mode
+      const offlineItems = await idbAll(mode);
+      const offlineRows = offlineItems.map(x => x.payload || x);
+      
+      // If we're offline, export locally (without QR images since we can't generate them client-side easily)
+      if (!isOnline) {
+        setStatus('Offline — exporting local data (without QR images)...');
+        
+        const displayedScans = scans;
+        const seenSerials = new Set();
+        const allRows = [];
+        
+        for (const scan of displayedScans) {
+          const key = normalizeSerial(scan.serial);
+          if (key && !seenSerials.has(key)) {
+            seenSerials.add(key);
+            allRows.push(scan);
+          }
+        }
+        for (const row of offlineRows) {
+          const key = normalizeSerial(row.serial);
+          if (key && !seenSerials.has(key)) {
+            seenSerials.add(key);
+            allRows.push(row);
+          }
+        }
+        
+        if (allRows.length === 0) {
+          alert('No scans to export.');
+          setStatus('No scans to export');
+          setExporting(false);
+          return;
+        }
+        
+        const result = await exportLocalToExcel(allRows, modeIsAlt(mode) ? 'Alt_Offline' : 'Master_Offline');
+        
+        if (result.success) {
+          setStatus(`Exported ${result.count} scans (offline, no QR images) — ${result.filename}`);
+          savedBeep();
+        } else {
+          throw new Error(result.error);
+        }
+        setExporting(false);
+        return;
+      }
+      
+      // Online: Try to sync first
       setStatus('Preparing export (images) — syncing local queue...');
       const flush = await flushLocalQueueBeforeExport({ useAlt: modeIsAlt(mode) });
       if (flush.error) {
-        const ok = confirm('Failed to sync offline scans to server. Continue export (server may be missing recent scans)?');
-        if (!ok) {
-          setStatus('Export cancelled (sync failed)');
+        const ok = confirm('Failed to sync offline scans to server. Export local data instead (without QR images)?');
+        if (ok) {
+          const displayedScans = scans;
+          const seenSerials = new Set();
+          const allRows = [];
+          
+          for (const scan of displayedScans) {
+            const key = normalizeSerial(scan.serial);
+            if (key && !seenSerials.has(key)) {
+              seenSerials.add(key);
+              allRows.push(scan);
+            }
+          }
+          for (const row of offlineRows) {
+            const key = normalizeSerial(row.serial);
+            if (key && !seenSerials.has(key)) {
+              seenSerials.add(key);
+              allRows.push(row);
+            }
+          }
+          
+          const result = await exportLocalToExcel(allRows, modeIsAlt(mode) ? 'Alt_Local' : 'Master_Local');
+          if (result.success) {
+            setStatus(`Exported ${result.count} scans (local, no QR images) — ${result.filename}`);
+            savedBeep();
+          } else {
+            throw new Error(result.error);
+          }
+          setExporting(false);
+          return;
+        } else {
+          setStatus('Export cancelled');
           setExporting(false);
           return;
         }

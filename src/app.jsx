@@ -6,7 +6,7 @@ import StartPage from './StartPage.jsx';
 import './app.css';
 import * as XLSX from 'xlsx';
 
-// kept because your file already imports them, even if not used directly here
+// kept because already in your project
 import ExcelJS from 'exceljs/dist/exceljs.min.js';
 import { saveAs } from 'file-saver';
 
@@ -290,8 +290,7 @@ export default function App() {
   const [dupPrompt, setDupPrompt] = useState(null);
   const [removePrompt, setRemovePrompt] = useState(null);
 
-  // sound
-  // Sound
+  // Sound: on by default, only muted if explicitly saved as muted
   const audioCtxRef = useRef(null);
   const [soundOn, setSoundOn] = useState(() => localStorage.getItem('rail-sound-muted') !== '1');
 
@@ -393,7 +392,6 @@ export default function App() {
     const handleOffline = () => {
       setIsOnline(false);
       setStatus('You are offline — scans will be saved locally');
-      warnBeep();
     };
 
     window.addEventListener('online', handleOnline);
@@ -408,9 +406,8 @@ export default function App() {
       window.removeEventListener('offline', handleOffline);
       clearInterval(interval);
     };
-  }, [updatePendingCounts, warnBeep]);
+  }, [updatePendingCounts]);
 
-  // sockets
   const socketRef = useRef(null);
   useEffect(() => {
     socketRef.current = socket;
@@ -610,10 +607,7 @@ export default function App() {
       });
 
       if (resp.ok) {
-        await idbClear(
-          items.map((x) => x.id),
-          m
-        );
+        await idbClear(items.map((x) => x.id), m);
 
         const [countResp, pageResp] = await Promise.all([
           fetch(api(endpoints.stagedCount(m))),
@@ -667,21 +661,18 @@ export default function App() {
 
       if (totalFlushed > 0) {
         setStatus(`✓ Synced ${totalFlushed} offline scan${totalFlushed > 1 ? 's' : ''}`);
-        syncBeep();
       } else if (mainResult.error || altResult.error) {
         setStatus('Sync failed — will retry later');
-        warnBeep();
       } else {
         setStatus('No pending scans to sync');
       }
     } catch (e) {
       console.error('Manual sync failed:', e);
       setStatus('Sync failed — please try again');
-      warnBeep();
     } finally {
       setIsSyncing(false);
     }
-  }, [isOnline, isSyncing, flushQueueForMode, updatePendingCounts, syncBeep, warnBeep]);
+  }, [isOnline, isSyncing, flushQueueForMode, updatePendingCounts]);
 
   useEffect(() => {
     async function flushBoth() {
@@ -719,10 +710,7 @@ export default function App() {
       }
 
       const body = await resp.json().catch(() => ({}));
-      await idbClear(
-        items.map((x) => x.id),
-        m
-      );
+      await idbClear(items.map((x) => x.id), m);
       await updatePendingCounts();
       return { flushed: payload.length, result: body };
     } catch (e) {
@@ -758,7 +746,6 @@ export default function App() {
     const serialKey = normalizeSerial(serial);
 
     if (!serialKey) {
-      warnBeep();
       setStatus('Scan had no detectable serial');
       return;
     }
@@ -768,7 +755,6 @@ export default function App() {
     lastHitRef.current = { serial: serialKey, at: now };
 
     if (isKnownDuplicate(serialKey)) {
-      warnBeep();
       setDupPrompt({
         serial: serialKey,
         matches: findDuplicates(serialKey),
@@ -792,7 +778,6 @@ export default function App() {
       if (resp.ok) {
         const info = await resp.json();
         if (info?.exists) {
-          warnBeep();
           setDupPrompt({
             serial: serialKey,
             matches: [info.row || { serial: serialKey }],
@@ -813,7 +798,7 @@ export default function App() {
       }
     } catch {}
 
-    okBeep();
+    await scanBeep();
     setPending({ serial: serialKey, raw: parsed.raw || String(rawText), capturedAt: new Date().toISOString() });
     setQrExtras({
       grade: parsed.grade || '',
@@ -833,7 +818,6 @@ export default function App() {
 
   const handleDupContinue = () => {
     if (!dupPrompt) return;
-    okBeep();
     setPending(dupPrompt.candidate.pending);
     setQrExtras(dupPrompt.candidate.qrExtras);
     setDupPrompt(null);
@@ -877,7 +861,6 @@ export default function App() {
     }
 
     if (isKnownDuplicate(pending.serial)) {
-      warnBeep();
       setDupPrompt({
         serial: String(pending.serial).toUpperCase(),
         matches: findDuplicates(pending.serial),
@@ -893,7 +876,6 @@ export default function App() {
       if (r.ok) {
         const j = await r.json();
         if (j?.exists) {
-          warnBeep();
           setDupPrompt({
             serial: pending.serial,
             matches: [j.row || { serial: pending.serial }],
@@ -945,7 +927,6 @@ export default function App() {
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
       setStatus(`Saved to staged (${mode.toUpperCase()})`);
-      savedBeep();
     } catch (e) {
       await idbAdd({ payload: rec }, mode);
       await updatePendingCounts();
@@ -958,7 +939,6 @@ export default function App() {
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
       setStatus(`Saved locally (offline) — will sync (${mode.toUpperCase()})`);
-      savedBeep();
     }
   };
 
@@ -970,7 +950,6 @@ export default function App() {
     const serialKey = normalizeSerial(manualSerial);
 
     if (isKnownDuplicate(serialKey)) {
-      warnBeep();
       setDupPrompt({
         serial: serialKey,
         matches: findDuplicates(serialKey),
@@ -1036,7 +1015,6 @@ export default function App() {
       setManualSerial('');
       setShowDamaged(false);
       setStatus(`Damaged QR saved (${mode.toUpperCase()})`);
-      savedBeep();
     } catch (e) {
       await idbAdd({ payload: rec }, mode);
       await updatePendingCounts();
@@ -1052,7 +1030,6 @@ export default function App() {
       setManualSerial('');
       setShowDamaged(false);
       setStatus(`Damaged QR saved locally (offline) — will sync (${mode.toUpperCase()})`);
-      savedBeep();
     }
   };
 
@@ -1184,7 +1161,6 @@ export default function App() {
 
         if (result.success) {
           setStatus(`Exported ${result.count} scans (offline) — ${result.filename}`);
-          savedBeep();
         } else {
           throw new Error(result.error);
         }
@@ -1218,7 +1194,6 @@ export default function App() {
           const result = await exportLocalToExcel(allRows, modeIsAlt(m) ? 'Alt_Local' : 'Master_Local');
           if (result.success) {
             setStatus(`Exported ${result.count} scans (local) — ${result.filename}`);
-            savedBeep();
           } else {
             throw new Error(result.error);
           }
@@ -1302,7 +1277,6 @@ export default function App() {
 
         if (result.success) {
           setStatus(`Exported ${result.count} scans (offline, no QR images) — ${result.filename}`);
-          savedBeep();
         } else {
           throw new Error(result.error);
         }
@@ -1337,7 +1311,6 @@ export default function App() {
           const result = await exportLocalToExcel(allRows, modeIsAlt(mode) ? 'Alt_Local' : 'Master_Local');
           if (result.success) {
             setStatus(`Exported ${result.count} scans (local, no QR images) — ${result.filename}`);
-            savedBeep();
           } else {
             throw new Error(result.error);
           }
@@ -1405,12 +1378,10 @@ export default function App() {
         setCursorMain(null);
       }
       setStatus(`${mode.toUpperCase()} scans cleared`);
-      savedBeep();
     } catch (e) {
       console.error(e);
       alert(`Failed to clear ${mode.toUpperCase()} scans: ${e.message || e}`);
       setStatus(`Failed to clear ${mode.toUpperCase()} scans`);
-      warnBeep();
     }
   };
 
@@ -1420,20 +1391,24 @@ export default function App() {
         <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
           <StartPage
             onStartMain={() => {
+              ensureAudioReady();
               setMode('main');
               setShowStart(false);
             }}
             onStartAlt={() => {
+              ensureAudioReady();
               setMode('alt');
               setShowStart(false);
             }}
             onExportMain={() => exportXlsmForMode('main')}
             onExportAlt={() => exportXlsmForMode('alt')}
             onContinue={() => {
+              ensureAudioReady();
               setMode('main');
               setShowStart(false);
             }}
             onStartScan={() => {
+              ensureAudioReady();
               setMode('main');
               setShowStart(false);
             }}
@@ -1462,7 +1437,9 @@ export default function App() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
             <div className="logo" />
             <div style={{ minWidth: 0 }}>
-              <div className="title">Rail Inventory ({mode.toUpperCase()}){knownBadge}</div>
+              <div className="title">
+                Rail Inventory ({mode.toUpperCase()}){knownBadge}
+              </div>
               <div className="status">{status}</div>
             </div>
           </div>
@@ -1507,7 +1484,6 @@ export default function App() {
                   </span>
                 )}
               </button>
-
               <button
                 className={`btn ${mode === 'alt' ? '' : 'btn-outline'}`}
                 onClick={() => setMode('alt')}
@@ -1532,8 +1508,8 @@ export default function App() {
               </button>
             </div>
 
-            <button className="btn" onClick={enableSound}>
-              {soundOn ? '🔊 Sound On' : '🔈 Enable Sound'}
+            <button className="btn" onClick={toggleSound}>
+              {soundOn ? '🔊 Mute' : '🔇 Unmute'}
             </button>
           </div>
         </div>
@@ -1572,9 +1548,7 @@ export default function App() {
 
           {pending && (
             <div className="notice" style={{ marginTop: 10 }}>
-              <div>
-                <strong>Pending Serial:</strong> {pending.serial}
-              </div>
+              <div><strong>Pending Serial:</strong> {pending.serial}</div>
               <div className="meta">Captured at: {new Date(pending.capturedAt).toLocaleString()}</div>
             </div>
           )}
@@ -1597,30 +1571,15 @@ export default function App() {
 
             <div>
               <label className="status">Wagon ID</label>
-              <input
-                className="input"
-                value={wagonId1}
-                onChange={(e) => setWagonId1(e.target.value)}
-                placeholder="e.g. WGN-0123"
-              />
+              <input className="input" value={wagonId1} onChange={(e) => setWagonId1(e.target.value)} placeholder="e.g. WGN-0123" />
             </div>
             <div>
               <label className="status">Wagon ID</label>
-              <input
-                className="input"
-                value={wagonId2}
-                onChange={(e) => setWagonId2(e.target.value)}
-                placeholder="e.g. WGN-0456"
-              />
+              <input className="input" value={wagonId2} onChange={(e) => setWagonId2(e.target.value)} placeholder="e.g. WGN-0456" />
             </div>
             <div>
               <label className="status">Wagon ID</label>
-              <input
-                className="input"
-                value={wagonId3}
-                onChange={(e) => setWagonId3(e.target.value)}
-                placeholder="e.g. WGN-0789"
-              />
+              <input className="input" value={wagonId3} onChange={(e) => setWagonId3(e.target.value)} placeholder="e.g. WGN-0789" />
             </div>
 
             <div>
@@ -1686,7 +1645,6 @@ export default function App() {
             <button
               className="btn btn-outline"
               onClick={() => {
-                if (!soundOn) enableSound();
                 setShowDamaged((v) => !v);
               }}
               aria-expanded={showDamaged}
@@ -1736,9 +1694,7 @@ export default function App() {
                 </div>
 
                 <div style={{ marginTop: 12 }}>
-                  <button className="btn" onClick={saveDamaged}>
-                    Save Damaged QR
-                  </button>
+                  <button className="btn" onClick={saveDamaged}>Save Damaged QR</button>
                 </div>
               </div>
             )}
@@ -1784,9 +1740,7 @@ export default function App() {
                 </div>
 
                 {(s.wagonId1 || s.wagonId2 || s.wagonId3) && (
-                  <div className="meta">
-                    Wagon IDs: {[s.wagonId1, s.wagonId2, s.wagonId3].filter(Boolean).join(' • ')}
-                  </div>
+                  <div className="meta">Wagon IDs: {[s.wagonId1, s.wagonId2, s.wagonId3].filter(Boolean).join(' • ')}</div>
                 )}
 
                 {(s.receivedAt || s.loadedAt) && (
@@ -1799,26 +1753,23 @@ export default function App() {
 
                 {s.destination && <div className="meta">Destination: {s.destination}</div>}
 
-                <div className="meta">{[s.grade, s.railType, s.spec, s.lengthM].filter(Boolean).join(' • ')}</div>
+                <div className="meta">
+                  {[s.grade, s.railType, s.spec, s.lengthM].filter(Boolean).join(' • ')}
+                </div>
 
-                <button className="btn btn-outline" onClick={() => handleRemoveScan(s.id)}>
-                  Remove
-                </button>
+                <button className="btn btn-outline" onClick={() => handleRemoveScan(s.id)}>Remove</button>
               </div>
             ))}
           </div>
 
           {nextCursor && (
             <div style={{ marginTop: 10 }}>
-              <button className="btn btn-outline" onClick={loadMore}>
-                Load more
-              </button>
+              <button className="btn btn-outline" onClick={loadMore}>Load more</button>
             </div>
           )}
         </section>
       </div>
 
-      {/* clear moved to bottom */}
       <section className="card" style={{ marginTop: 20 }}>
         <h3 style={{ color: 'rgb(220,38,38)' }}>Danger Zone</h3>
         <div className="status" style={{ marginBottom: 12 }}>
@@ -1845,52 +1796,19 @@ export default function App() {
         <div
           role="dialog"
           aria-modal="true"
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(2,6,23,.55)',
-            display: 'grid',
-            placeItems: 'center',
-            zIndex: 50,
-            padding: 16,
-          }}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}
         >
-          <div
-            className="card"
-            style={{
-              maxWidth: 520,
-              width: '100%',
-              border: '1px solid var(--line)',
-              boxShadow: '0 20px 60px rgba(2,6,23,.35)',
-            }}
-          >
+          <div className="card" style={{ maxWidth: 520, width: '100%', border: '1px solid var(--line)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}>
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-              <div
-                style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 9999,
-                  display: 'grid',
-                  placeItems: 'center',
-                  background: 'rgba(220,38,38,.1)',
-                  color: 'rgb(220,38,38)',
-                  fontSize: 22,
-                }}
-              >
-                ⚠️
-              </div>
+              <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(220,38,38,.1)', color: 'rgb(220,38,38)', fontSize: 22 }}>⚠️</div>
               <div style={{ flex: 1 }}>
                 <h3 style={{ margin: 0 }}>Are you sure?</h3>
                 <div className="status" style={{ marginTop: 6 }}>
                   Remove this staged scan from the {mode.toUpperCase()} list?
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-                  <button className="btn btn-outline" onClick={discardRemovePrompt}>
-                    Cancel
-                  </button>
-                  <button className="btn" onClick={confirmRemoveScan}>
-                    Confirm
-                  </button>
+                  <button className="btn btn-outline" onClick={discardRemovePrompt}>Cancel</button>
+                  <button className="btn" onClick={confirmRemoveScan}>Confirm</button>
                 </div>
               </div>
             </div>
@@ -1902,53 +1820,19 @@ export default function App() {
         <div
           role="dialog"
           aria-modal="true"
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(2,6,23,.55)',
-            display: 'grid',
-            placeItems: 'center',
-            zIndex: 50,
-            padding: 16,
-          }}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}
         >
-          <div
-            className="card"
-            style={{
-              maxWidth: 560,
-              width: '100%',
-              border: '1px solid var(--line)',
-              boxShadow: '0 20px 60px rgba(2,6,23,.35)',
-            }}
-          >
+          <div className="card" style={{ maxWidth: 560, width: '100%', border: '1px solid var(--line)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}>
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-              <div
-                style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 9999,
-                  display: 'grid',
-                  placeItems: 'center',
-                  background: 'rgba(251,191,36,.15)',
-                  color: 'rgb(202,138,4)',
-                  fontSize: 22,
-                }}
-              >
-                ⚠️
-              </div>
+              <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(251,191,36,.15)', color: 'rgb(202,138,4)', fontSize: 22 }}>⚠️</div>
               <div style={{ flex: 1 }}>
                 <h3 style={{ margin: 0 }}>Duplicate detected</h3>
                 <div className="status" style={{ marginTop: 6 }}>
-                  The serial <strong>{dupPrompt.serial}</strong> already exists in the {mode.toUpperCase()} staged
-                  list ({dupPrompt.matches?.length ?? 1}).
+                  The serial <strong>{dupPrompt.serial}</strong> already exists in the {mode.toUpperCase()} staged list ({dupPrompt.matches?.length ?? 1}).
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-                  <button className="btn btn-outline" onClick={handleDupDiscard}>
-                    Discard
-                  </button>
-                  <button className="btn" onClick={handleDupContinue}>
-                    Continue anyway
-                  </button>
+                  <button className="btn btn-outline" onClick={handleDupDiscard}>Discard</button>
+                  <button className="btn" onClick={handleDupContinue}>Continue anyway</button>
                 </div>
               </div>
             </div>

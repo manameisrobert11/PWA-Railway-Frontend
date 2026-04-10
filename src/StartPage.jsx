@@ -493,7 +493,6 @@ export default function StartPage({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {/* Hero */}
       <section className="card" style={{ display: 'grid', gap: 12, padding: 20 }}>
         <div>
           <h2 style={{ margin: 0, lineHeight: 1.15, fontSize: 24 }}>
@@ -523,7 +522,6 @@ export default function StartPage({
         </div>
       </section>
 
-      {/* Quick settings */}
       <section className="card" style={{ display: 'grid', gap: 10, padding: 20 }}>
         <h3 style={{ margin: 0 }}>Quick Settings</h3>
         <div>
@@ -542,7 +540,6 @@ export default function StartPage({
         </p>
       </section>
 
-      {/* Stats row */}
       <div
         style={{
           display: 'flex',
@@ -565,7 +562,6 @@ export default function StartPage({
         <StatCard label="Month" value={loading ? '...' : analytics.monthCount} icon="🗓️" color="#8b5cf6" />
       </div>
 
-      {/* Important analytics first */}
       <div style={dashboardGrid}>
         <section className="card" style={{ padding: 20 }}>
           <h3 style={{ margin: '0 0 14px 0', fontSize: 15 }}>MAIN vs ALT</h3>
@@ -601,7 +597,6 @@ export default function StartPage({
         </section>
       </div>
 
-      {/* Recent activity higher up for mobile usefulness */}
       <section className="card" style={{ padding: 20 }}>
         <h3 style={{ margin: '0 0 12px 0', fontSize: 15 }}>Recent Activity</h3>
         {loading ? (
@@ -626,7 +621,6 @@ export default function StartPage({
         )}
       </section>
 
-      {/* Secondary analytics */}
       <div style={dashboardGrid}>
         <section className="card" style={{ padding: 20 }}>
           <h3 style={{ margin: '0 0 8px 0', fontSize: 15 }}>By Rail Type</h3>
@@ -656,45 +650,42 @@ export default function StartPage({
         )}
       </section>
 
-      {/* Admin panel only if provided */}
-      {typeof onOpenAdmin === 'function' && (
-        <section
-          className="card"
+      <section
+        className="card"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 12,
+          background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)',
+          color: '#fff',
+          padding: 20,
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 10, color: '#fff' }}>
+            <span style={{ fontSize: 22 }}>🛡️</span>
+            Admin Panel
+          </h3>
+          <p style={{ margin: '8px 0 0', fontSize: 13, opacity: 0.85 }}>
+            View history, audit log, and restore deleted scans
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={onOpenAdmin}
+          className="btn"
           style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            flexWrap: 'wrap',
-            gap: 12,
-            background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)',
-            color: '#fff',
-            padding: 20,
+            background: 'rgba(255,255,255,0.14)',
+            border: '1px solid rgba(255,255,255,0.28)',
+            boxShadow: 'none',
           }}
         >
-          <div style={{ minWidth: 0 }}>
-            <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 10, color: '#fff' }}>
-              <span style={{ fontSize: 22 }}>🛡️</span>
-              Admin Panel
-            </h3>
-            <p style={{ margin: '8px 0 0', fontSize: 13, opacity: 0.85 }}>
-              View history, audit log, and restore deleted scans
-            </p>
-          </div>
-
-          <button
-            type="button"
-            onClick={onOpenAdmin}
-            className="btn"
-            style={{
-              background: 'rgba(255,255,255,0.14)',
-              border: '1px solid rgba(255,255,255,0.28)',
-              boxShadow: 'none',
-            }}
-          >
-            Open Admin Panel
-          </button>
-        </section>
-      )}
+          Open Admin Panel
+        </button>
+      </section>
 
       <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--muted)', padding: '2px 0 10px' }}>
         Dashboard auto-refreshes every 30 seconds

@@ -25,7 +25,7 @@ function BarChart({ data, title, color = 'var(--blue)' }) {
             key={idx}
             style={{
               display: 'grid',
-              gridTemplateColumns: '70px 1fr 36px',
+              gridTemplateColumns: '64px 1fr 34px',
               alignItems: 'center',
               gap: 8,
             }}
@@ -44,7 +44,7 @@ function BarChart({ data, title, color = 'var(--blue)' }) {
 
             <div
               style={{
-                height: 20,
+                height: 18,
                 background: 'var(--line)',
                 borderRadius: 999,
                 overflow: 'hidden',
@@ -85,7 +85,7 @@ function TrendChart({ data, color = 'var(--blue)' }) {
   const maxVal = Math.max(...data, 1);
   const minVal = Math.min(...data, 0);
   const range = maxVal - minVal || 1;
-  const height = 40;
+  const height = 42;
   const width = 120;
 
   const points = data
@@ -118,18 +118,26 @@ function StatCard({ label, value, subValue, trend, color = 'var(--blue)', icon }
     <div
       className="card"
       style={{
-        padding: 16,
+        padding: 14,
+        minWidth: 155,
         display: 'flex',
         flexDirection: 'column',
         gap: 8,
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-start',
+          gap: 8,
+        }}
+      >
         <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 600 }}>{label}</span>
-        {icon && <span style={{ fontSize: 20, lineHeight: 1 }}>{icon}</span>}
+        {icon && <span style={{ fontSize: 18, lineHeight: 1 }}>{icon}</span>}
       </div>
 
-      <div style={{ fontSize: 28, fontWeight: 800, color, lineHeight: 1.05 }}>{value}</div>
+      <div style={{ fontSize: 24, fontWeight: 800, color, lineHeight: 1.05 }}>{value}</div>
 
       {(subValue || trend !== undefined) && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12 }}>
@@ -155,7 +163,7 @@ function DonutChart({ mainCount, altCount }) {
   const mainPct = (mainCount / total) * 100;
   const altPct = (altCount / total) * 100;
 
-  const radius = 40;
+  const radius = 34;
   const circumference = 2 * Math.PI * radius;
   const mainStroke = (mainPct / 100) * circumference;
   const altStroke = (altPct / 100) * circumference;
@@ -165,43 +173,43 @@ function DonutChart({ mainCount, altCount }) {
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 18,
+        gap: 16,
         flexWrap: 'wrap',
       }}
     >
-      <svg width="100" height="100" viewBox="0 0 100 100" style={{ flexShrink: 0 }}>
-        <circle cx="50" cy="50" r={radius} fill="none" stroke="var(--line)" strokeWidth="12" />
+      <svg width="88" height="88" viewBox="0 0 88 88" style={{ flexShrink: 0 }}>
+        <circle cx="44" cy="44" r={radius} fill="none" stroke="var(--line)" strokeWidth="10" />
         <circle
-          cx="50"
-          cy="50"
+          cx="44"
+          cy="44"
           r={radius}
           fill="none"
           stroke="var(--blue)"
-          strokeWidth="12"
+          strokeWidth="10"
           strokeDasharray={`${mainStroke} ${circumference}`}
           strokeLinecap="round"
-          transform="rotate(-90 50 50)"
+          transform="rotate(-90 44 44)"
           style={{ transition: 'stroke-dasharray 0.5s ease' }}
         />
         <circle
-          cx="50"
-          cy="50"
+          cx="44"
+          cy="44"
           r={radius}
           fill="none"
           stroke="#f59e0b"
-          strokeWidth="12"
+          strokeWidth="10"
           strokeDasharray={`${altStroke} ${circumference}`}
           strokeDashoffset={-mainStroke}
           strokeLinecap="round"
-          transform="rotate(-90 50 50)"
+          transform="rotate(-90 44 44)"
           style={{ transition: 'stroke-dasharray 0.5s ease' }}
         />
         <text
-          x="50"
-          y="50"
+          x="44"
+          y="44"
           textAnchor="middle"
           dy="0.35em"
-          fontSize="16"
+          fontSize="15"
           fontWeight="800"
           fill="var(--ink)"
         >
@@ -209,7 +217,7 @@ function DonutChart({ mainCount, altCount }) {
         </text>
       </svg>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ width: 12, height: 12, borderRadius: 3, background: 'var(--blue)' }} />
           <span style={{ fontSize: 13 }}>
@@ -250,15 +258,15 @@ function ActivityItem({ scan }) {
     >
       <div
         style={{
-          width: 36,
-          height: 36,
+          width: 34,
+          height: 34,
           borderRadius: 10,
           background: 'var(--blue)',
           color: '#fff',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          fontSize: 14,
+          fontSize: 13,
           fontWeight: 700,
           flexShrink: 0,
         }}
@@ -467,181 +475,56 @@ export default function StartPage({
   const dateStr = now.toLocaleDateString(undefined, {
     weekday: 'long',
     year: 'numeric',
-    month: 'long',
+    month: 'short',
     day: 'numeric',
   });
 
+  const mobileTwoCol = {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
+    gap: 10,
+  };
+
+  const dashboardGrid = {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+    gap: 14,
+  };
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* Hero / Welcome */}
-      <section className="card" style={{ display: 'grid', gap: 14 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* Hero */}
+      <section className="card" style={{ display: 'grid', gap: 12, padding: 20 }}>
         <div>
-          <h2 style={{ margin: 0, lineHeight: 1.15 }}>
+          <h2 style={{ margin: 0, lineHeight: 1.15, fontSize: 24 }}>
             Welcome to <span style={{ color: 'var(--blue)' }}>Rail Inventory</span>
           </h2>
-          <div style={{ fontSize: 14, color: 'var(--muted)', marginTop: 8 }}>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>
             {dateStr} • <span style={{ fontVariantNumeric: 'tabular-nums' }}>{timeStr}</span>
           </div>
         </div>
 
-        <div
-          className="grid"
-          style={{
-            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-            gap: 12,
-          }}
-        >
+        <div style={mobileTwoCol}>
           <button type="button" className="btn" onClick={onStartMain}>
-            Start Scanning (MAIN)
+            Start MAIN
           </button>
           <button type="button" className="btn btn-outline" onClick={onStartAlt}>
-            Start Scanning (ALT)
+            Start ALT
           </button>
         </div>
 
-        <div
-          className="grid"
-          style={{
-            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-            gap: 12,
-          }}
-        >
+        <div style={mobileTwoCol}>
           <button type="button" className="btn btn-outline" onClick={onExportMain}>
-            Export MAIN Excel
+            Export MAIN
           </button>
           <button type="button" className="btn btn-outline" onClick={onExportAlt}>
-            Export ALT Excel
+            Export ALT
           </button>
         </div>
-      </section>
-
-      {/* Stats */}
-      <div
-        className="grid"
-        style={{
-          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-          gap: 12,
-        }}
-      >
-        <StatCard label="Total Scans" value={loading ? '...' : analytics.total} icon="📊" color="var(--blue)" />
-        <StatCard label="Today" value={loading ? '...' : analytics.todayCount} icon="📅" color="#22c55e" />
-        <StatCard
-          label="This Week"
-          value={loading ? '...' : analytics.weekCount}
-          trend={analytics.weekTrend}
-          subValue="vs last week"
-          icon="📈"
-          color="#3b82f6"
-        />
-        <StatCard label="This Month" value={loading ? '...' : analytics.monthCount} icon="🗓️" color="#8b5cf6" />
-      </div>
-
-      {/* Distribution + trends */}
-      <div
-        className="grid"
-        style={{
-          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-          gap: 16,
-        }}
-      >
-        <section className="card">
-          <h3 style={{ margin: '0 0 16px 0', fontSize: 15 }}>MAIN vs ALT Distribution</h3>
-          {loading ? (
-            <div style={{ color: 'var(--muted)', fontSize: 14 }}>Loading...</div>
-          ) : (
-            <DonutChart mainCount={stats.mainTotal} altCount={stats.altTotal} />
-          )}
-        </section>
-
-        <section className="card">
-          <h3 style={{ margin: '0 0 8px 0', fontSize: 15 }}>7-Day Trend</h3>
-
-          {loading ? (
-            <div style={{ color: 'var(--muted)', fontSize: 14 }}>Loading...</div>
-          ) : (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 16,
-                flexWrap: 'wrap',
-                marginBottom: 8,
-              }}
-            >
-              <TrendChart data={analytics.dailyTrend} />
-              <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-                {analytics.dailyTrend.reduce((a, b) => a + b, 0)} scans in 7 days
-              </div>
-            </div>
-          )}
-
-          <BarChart data={analytics.operatorData} title="By Operator" color="var(--blue)" />
-        </section>
-      </div>
-
-      {/* Extra analytics */}
-      <div
-        className="grid"
-        style={{
-          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-          gap: 16,
-        }}
-      >
-        <section className="card">
-          <h3 style={{ margin: '0 0 8px 0', fontSize: 15 }}>By Rail Type</h3>
-          {loading ? (
-            <div style={{ color: 'var(--muted)', fontSize: 14 }}>Loading...</div>
-          ) : (
-            <BarChart data={analytics.railTypeData} title="Rail Types" color="#3b82f6" />
-          )}
-        </section>
-
-        <section className="card">
-          <h3 style={{ margin: '0 0 8px 0', fontSize: 15 }}>By Grade</h3>
-          {loading ? (
-            <div style={{ color: 'var(--muted)', fontSize: 14 }}>Loading...</div>
-          ) : (
-            <BarChart data={analytics.gradeData} title="Grades" color="#8b5cf6" />
-          )}
-        </section>
-      </div>
-
-      <section className="card">
-        <h3 style={{ margin: '0 0 8px 0', fontSize: 15 }}>Top Destinations</h3>
-        {loading ? (
-          <div style={{ color: 'var(--muted)', fontSize: 14 }}>Loading...</div>
-        ) : (
-          <BarChart data={analytics.destinationData} title="By Destination" color="#f59e0b" />
-        )}
-      </section>
-
-      {/* Recent activity */}
-      <section className="card">
-        <h3 style={{ margin: '0 0 12px 0', fontSize: 15 }}>Recent Activity</h3>
-        {loading ? (
-          <div style={{ color: 'var(--muted)', fontSize: 14 }}>Loading...</div>
-        ) : analytics.recentScans.length > 0 ? (
-          <div>
-            {analytics.recentScans.map((scan, idx) => (
-              <ActivityItem key={scan.id || idx} scan={scan} />
-            ))}
-          </div>
-        ) : (
-          <div
-            style={{
-              color: 'var(--muted)',
-              fontSize: 13,
-              padding: '20px 0',
-              textAlign: 'center',
-            }}
-          >
-            No recent scans. Start scanning to see activity here.
-          </div>
-        )}
       </section>
 
       {/* Quick settings */}
-      <section className="card" style={{ display: 'grid', gap: 10 }}>
+      <section className="card" style={{ display: 'grid', gap: 10, padding: 20 }}>
         <h3 style={{ margin: 0 }}>Quick Settings</h3>
         <div>
           <label className="status">Operator</label>
@@ -659,45 +542,161 @@ export default function StartPage({
         </p>
       </section>
 
-      {/* Admin panel */}
-      <section
-        className="card"
+      {/* Stats row */}
+      <div
         style={{
           display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          flexWrap: 'wrap',
-          gap: 12,
-          background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)',
-          color: '#fff',
+          gap: 10,
+          overflowX: 'auto',
+          paddingBottom: 2,
+          scrollbarWidth: 'thin',
         }}
       >
-        <div style={{ minWidth: 0 }}>
-          <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 10, color: '#fff' }}>
-            <span style={{ fontSize: 24 }}>🛡️</span>
-            Admin Panel
-          </h3>
-          <p style={{ margin: '8px 0 0', fontSize: 13, opacity: 0.85 }}>
-            View history, audit log, and restore deleted scans
-          </p>
-        </div>
+        <StatCard label="Total" value={loading ? '...' : analytics.total} icon="📊" color="var(--blue)" />
+        <StatCard label="Today" value={loading ? '...' : analytics.todayCount} icon="📅" color="#22c55e" />
+        <StatCard
+          label="This Week"
+          value={loading ? '...' : analytics.weekCount}
+          trend={analytics.weekTrend}
+          subValue="vs last week"
+          icon="📈"
+          color="#3b82f6"
+        />
+        <StatCard label="Month" value={loading ? '...' : analytics.monthCount} icon="🗓️" color="#8b5cf6" />
+      </div>
 
-        <button
-          type="button"
-          onClick={onOpenAdmin}
-          className="btn"
-          style={{
-            background: 'rgba(255,255,255,0.14)',
-            border: '1px solid rgba(255,255,255,0.28)',
-            boxShadow: 'none',
-          }}
-        >
-          Open Admin Panel →
-        </button>
+      {/* Important analytics first */}
+      <div style={dashboardGrid}>
+        <section className="card" style={{ padding: 20 }}>
+          <h3 style={{ margin: '0 0 14px 0', fontSize: 15 }}>MAIN vs ALT</h3>
+          {loading ? (
+            <div style={{ color: 'var(--muted)', fontSize: 14 }}>Loading...</div>
+          ) : (
+            <DonutChart mainCount={stats.mainTotal} altCount={stats.altTotal} />
+          )}
+        </section>
+
+        <section className="card" style={{ padding: 20 }}>
+          <h3 style={{ margin: '0 0 8px 0', fontSize: 15 }}>7-Day Trend</h3>
+          {loading ? (
+            <div style={{ color: 'var(--muted)', fontSize: 14 }}>Loading...</div>
+          ) : (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                flexWrap: 'wrap',
+                marginBottom: 8,
+              }}
+            >
+              <TrendChart data={analytics.dailyTrend} />
+              <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+                {analytics.dailyTrend.reduce((a, b) => a + b, 0)} scans in 7 days
+              </div>
+            </div>
+          )}
+
+          <BarChart data={analytics.operatorData} title="By Operator" color="var(--blue)" />
+        </section>
+      </div>
+
+      {/* Recent activity higher up for mobile usefulness */}
+      <section className="card" style={{ padding: 20 }}>
+        <h3 style={{ margin: '0 0 12px 0', fontSize: 15 }}>Recent Activity</h3>
+        {loading ? (
+          <div style={{ color: 'var(--muted)', fontSize: 14 }}>Loading...</div>
+        ) : analytics.recentScans.length > 0 ? (
+          <div>
+            {analytics.recentScans.map((scan, idx) => (
+              <ActivityItem key={scan.id || idx} scan={scan} />
+            ))}
+          </div>
+        ) : (
+          <div
+            style={{
+              color: 'var(--muted)',
+              fontSize: 13,
+              padding: '18px 0',
+              textAlign: 'center',
+            }}
+          >
+            No recent scans. Start scanning to see activity here.
+          </div>
+        )}
       </section>
 
-      {/* Footer */}
-      <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--muted)', padding: '4px 0 10px' }}>
+      {/* Secondary analytics */}
+      <div style={dashboardGrid}>
+        <section className="card" style={{ padding: 20 }}>
+          <h3 style={{ margin: '0 0 8px 0', fontSize: 15 }}>By Rail Type</h3>
+          {loading ? (
+            <div style={{ color: 'var(--muted)', fontSize: 14 }}>Loading...</div>
+          ) : (
+            <BarChart data={analytics.railTypeData} title="Rail Types" color="#3b82f6" />
+          )}
+        </section>
+
+        <section className="card" style={{ padding: 20 }}>
+          <h3 style={{ margin: '0 0 8px 0', fontSize: 15 }}>By Grade</h3>
+          {loading ? (
+            <div style={{ color: 'var(--muted)', fontSize: 14 }}>Loading...</div>
+          ) : (
+            <BarChart data={analytics.gradeData} title="Grades" color="#8b5cf6" />
+          )}
+        </section>
+      </div>
+
+      <section className="card" style={{ padding: 20 }}>
+        <h3 style={{ margin: '0 0 8px 0', fontSize: 15 }}>Top Destinations</h3>
+        {loading ? (
+          <div style={{ color: 'var(--muted)', fontSize: 14 }}>Loading...</div>
+        ) : (
+          <BarChart data={analytics.destinationData} title="By Destination" color="#f59e0b" />
+        )}
+      </section>
+
+      {/* Admin panel only if provided */}
+      {typeof onOpenAdmin === 'function' && (
+        <section
+          className="card"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: 12,
+            background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)',
+            color: '#fff',
+            padding: 20,
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 10, color: '#fff' }}>
+              <span style={{ fontSize: 22 }}>🛡️</span>
+              Admin Panel
+            </h3>
+            <p style={{ margin: '8px 0 0', fontSize: 13, opacity: 0.85 }}>
+              View history, audit log, and restore deleted scans
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onOpenAdmin}
+            className="btn"
+            style={{
+              background: 'rgba(255,255,255,0.14)',
+              border: '1px solid rgba(255,255,255,0.28)',
+              boxShadow: 'none',
+            }}
+          >
+            Open Admin Panel
+          </button>
+        </section>
+      )}
+
+      <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--muted)', padding: '2px 0 10px' }}>
         Dashboard auto-refreshes every 30 seconds
       </div>
     </div>

@@ -1,6 +1,4 @@
-// src/App.jsx — Start page with working MAIN/ALT start buttons (no extra toggles),
-// password-protected clear buttons per mode, separate queues, duplicate detection, etc.
-// + OFFLINE IMPROVEMENTS: status indicator, pending count, manual sync button
+// src/App.jsx
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { socket } from './socket';
 import Scanner from './scanner/Scanner.jsx';
@@ -8,16 +6,14 @@ import StartPage from './StartPage.jsx';
 import './app.css';
 import * as XLSX from 'xlsx';
 
-// NEW imports for image-enabled export
-import ExcelJS from 'exceljs/dist/exceljs.min.js'; // exceljs browser build
+// kept because your file already imports them, even if not used directly here
+import ExcelJS from 'exceljs/dist/exceljs.min.js';
 import { saveAs } from 'file-saver';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const api = (p) => {
   const path = p.startsWith('/') ? p : `/${p}`;
-  // Always include /api prefix
   if (API_BASE) {
-    // If API_BASE already ends with /api, don't add it again
     if (API_BASE.endsWith('/api')) {
       return `${API_BASE}${path}`;
     }
@@ -28,14 +24,15 @@ const api = (p) => {
 
 const modeIsAlt = (m) => m === 'alt';
 const endpoints = {
-  staged: (m) => modeIsAlt(m) ? '/staged-alt' : '/staged',
-  stagedCount: (m) => modeIsAlt(m) ? '/staged-alt/count' : '/staged/count',
+  staged: (m) => (modeIsAlt(m) ? '/staged-alt' : '/staged'),
+  stagedCount: (m) => (modeIsAlt(m) ? '/staged-alt/count' : '/staged/count'),
   stagedDelete: (m, id) => (modeIsAlt(m) ? `/staged-alt/${id}` : `/staged/${id}`),
-  scan: (m) => modeIsAlt(m) ? '/scan-alt' : '/scan',
-  exists: (m, serial) => modeIsAlt(m) ? `/exists-alt/${encodeURIComponent(serial)}` : `/exists/${encodeURIComponent(serial)}`,
-  clearAll: (m) => modeIsAlt(m) ? '/staged-alt/clear' : '/staged/clear',
-  exportXlsm: (m) => modeIsAlt(m) ? '/export-alt-to-excel' : '/export-to-excel',
-  exportXlsxImages: (m) => modeIsAlt(m) ? '/export-alt-xlsx-images' : '/export-xlsx-images',
+  scan: (m) => (modeIsAlt(m) ? '/scan-alt' : '/scan'),
+  exists: (m, serial) =>
+    modeIsAlt(m) ? `/exists-alt/${encodeURIComponent(serial)}` : `/exists/${encodeURIComponent(serial)}`,
+  clearAll: (m) => (modeIsAlt(m) ? '/staged-alt/clear' : '/staged/clear'),
+  exportXlsm: (m) => (modeIsAlt(m) ? '/export-alt-to-excel' : '/export-to-excel'),
+  exportXlsxImages: (m) => (modeIsAlt(m) ? '/export-alt-xlsx-images' : '/export-xlsx-images'),
 };
 
 const FIXED_DAMAGED = {
@@ -63,7 +60,10 @@ function parseQrPayload(raw) {
   let railType = '';
   for (const t of tokens) {
     const u = t.toUpperCase();
-    if (/^R\d{3}(?:L?HT)?$/.test(u)) { railType = u; break; }
+    if (/^R\d{3}(?:L?HT)?$/.test(u)) {
+      railType = u;
+      break;
+    }
   }
 
   let spec = '';
@@ -84,12 +84,12 @@ function parseQrPayload(raw) {
   return { raw: clean, serial, grade, railType, spec, lengthM };
 }
 
-// IndexedDB queues (separate per mode)
+// IndexedDB queues
 const DB_NAME = 'rail-offline';
 const DB_VERSION = 2;
 const STORE_MAIN = 'queue_main';
 const STORE_ALT = 'queue_alt';
-const storeForMode = (m) => modeIsAlt(m) ? STORE_ALT : STORE_MAIN;
+const storeForMode = (m) => (modeIsAlt(m) ? STORE_ALT : STORE_MAIN);
 
 function idbOpen() {
   return new Promise((resolve, reject) => {
@@ -136,62 +136,66 @@ async function idbClear(ids, mode) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, 'readwrite');
     const store = tx.objectStore(storeName);
-    (ids || []).forEach(id => store.delete(id));
+    (ids || []).forEach((id) => store.delete(id));
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
 
-// ==================== OFFLINE STATUS INDICATOR COMPONENT ====================
 function OfflineIndicator({ isOnline, pendingCount, isSyncing, onManualSync }) {
   return (
-    <div style={{
-      display: 'flex',
-      alignItems: 'center',
-      gap: 8,
-      padding: '6px 12px',
-      borderRadius: 8,
-      background: isOnline ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-      border: `1px solid ${isOnline ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
-    }}>
-      {/* Status dot */}
-      <div style={{
-        width: 8,
-        height: 8,
-        borderRadius: '50%',
-        background: isOnline ? '#22c55e' : '#ef4444',
-        boxShadow: isOnline ? '0 0 6px #22c55e' : '0 0 6px #ef4444',
-        animation: isOnline ? 'none' : 'pulse 2s infinite',
-      }} />
-      
-      {/* Status text */}
-      <span style={{
-        fontSize: 12,
-        fontWeight: 600,
-        color: isOnline ? '#22c55e' : '#ef4444',
-      }}>
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '6px 12px',
+        borderRadius: 8,
+        background: isOnline ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+        border: `1px solid ${isOnline ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+        flexWrap: 'wrap',
+      }}
+    >
+      <div
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: '50%',
+          background: isOnline ? '#22c55e' : '#ef4444',
+          boxShadow: isOnline ? '0 0 6px #22c55e' : '0 0 6px #ef4444',
+          animation: isOnline ? 'none' : 'pulse 2s infinite',
+        }}
+      />
+
+      <span
+        style={{
+          fontSize: 12,
+          fontWeight: 600,
+          color: isOnline ? '#22c55e' : '#ef4444',
+        }}
+      >
         {isOnline ? 'Online' : 'Offline'}
       </span>
-      
-      {/* Pending count badge */}
+
       {pendingCount > 0 && (
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 4,
-          padding: '2px 8px',
-          borderRadius: 12,
-          background: '#f59e0b',
-          color: '#fff',
-          fontSize: 11,
-          fontWeight: 700,
-        }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            padding: '2px 8px',
+            borderRadius: 12,
+            background: '#f59e0b',
+            color: '#fff',
+            fontSize: 11,
+            fontWeight: 700,
+          }}
+        >
           <span>⏳</span>
           <span>{pendingCount} pending</span>
         </div>
       )}
-      
-      {/* Manual sync button */}
+
       {pendingCount > 0 && isOnline && (
         <button
           onClick={onManualSync}
@@ -227,7 +231,6 @@ function OfflineIndicator({ isOnline, pendingCount, isSyncing, onManualSync }) {
   );
 }
 
-// Add CSS animation for pulse and spin
 const styleSheet = document.createElement('style');
 styleSheet.textContent = `
   @keyframes pulse {
@@ -245,22 +248,19 @@ if (!document.querySelector('style[data-offline-indicator]')) {
 }
 
 export default function App() {
-  // Which dataset are we scanning right now?
-  const [mode, setMode] = useState('main'); // 'main' | 'alt'
+  const [mode, setMode] = useState('main');
   const [showStart, setShowStart] = useState(true);
 
   const [status, setStatus] = useState('Ready');
 
-  // ==================== OFFLINE STATE ====================
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [pendingMainCount, setPendingMainCount] = useState(0);
   const [pendingAltCount, setPendingAltCount] = useState(0);
   const [isSyncing, setIsSyncing] = useState(false);
-  
+
   const totalPendingCount = pendingMainCount + pendingAltCount;
   const currentModePendingCount = modeIsAlt(mode) ? pendingAltCount : pendingMainCount;
 
-  // Separate lists & pagination for MAIN/ALT
   const [scansMain, setScansMain] = useState([]);
   const [scansAlt, setScansAlt] = useState([]);
 
@@ -270,15 +270,12 @@ export default function App() {
   const [cursorMain, setCursorMain] = useState(null);
   const [cursorAlt, setCursorAlt] = useState(null);
 
-  // Active list helpers
   const scans = modeIsAlt(mode) ? scansAlt : scansMain;
   const setScans = modeIsAlt(mode) ? setScansAlt : setScansMain;
   const totalCount = modeIsAlt(mode) ? totalAlt : totalMain;
   const setTotalCount = modeIsAlt(mode) ? setTotalAlt : setTotalMain;
   const nextCursor = modeIsAlt(mode) ? cursorAlt : cursorMain;
-  const setNextCursor = modeIsAlt(mode) ? setCursorAlt : setCursorMain;
 
-  // Controls
   const [operator, setOperator] = useState('Clerk A');
   const [wagonId1, setWagonId1] = useState('');
   const [wagonId2, setWagonId2] = useState('');
@@ -287,37 +284,37 @@ export default function App() {
   const [loadedAt] = useState('WalvisBay');
   const [destination, setDestination] = useState('');
 
-  // Pending capture
   const [pending, setPending] = useState(null);
   const [qrExtras, setQrExtras] = useState({ grade: '', railType: '', spec: '', lengthM: '' });
 
-  // Modals
   const [dupPrompt, setDupPrompt] = useState(null);
   const [removePrompt, setRemovePrompt] = useState(null);
 
-  // Sound
+  // sound
   const audioCtxRef = useRef(null);
   const [soundOn, setSoundOn] = useState(false);
-  const enableSound = async () => {
-    try {
-      if (!audioCtxRef.current) {
-        const Ctx = window.AudioContext || window.webkitAudioContext;
-        if (!Ctx) return alert('AudioContext not supported on this device/browser.');
-        audioCtxRef.current = new Ctx();
-      }
-      if (audioCtxRef.current.state === 'suspended') {
-        await audioCtxRef.current.resume();
-      }
-      playBeep(1200, 60);
-      setSoundOn(true);
-      localStorage.setItem('rail-sound-enabled', '1');
-    } catch {}
-  };
 
-  const playBeep = (freq = 1500, durationMs = 80) => {
+  const ensureAudioReady = useCallback(async () => {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) {
+      alert('AudioContext not supported on this device/browser.');
+      return null;
+    }
+
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new Ctx();
+    }
+
+    if (audioCtxRef.current.state === 'suspended') {
+      await audioCtxRef.current.resume();
+    }
+
+    return audioCtxRef.current;
+  }, []);
+
+  const playBeepDirect = useCallback((ctx, freq = 1500, durationMs = 80) => {
     try {
-      const ctx = audioCtxRef.current;
-      if (!ctx || !soundOn) return;
+      if (!ctx) return;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = 'square';
@@ -328,22 +325,44 @@ export default function App() {
       osc.start(now);
       osc.stop(now + durationMs / 1000);
     } catch {}
-  };
-
-  const okBeep = () => playBeep(1500, 80);
-  const warnBeep = () => playBeep(900, 90);
-  const savedBeep = () => playBeep(2000, 140);
-  const syncBeep = () => playBeep(1800, 120); // New beep for successful sync
-
-  useEffect(() => {
-    if (localStorage.getItem('rail-sound-enabled') === '1') enableSound();
   }, []);
 
-  // Damaged QR
+  const enableSound = useCallback(async () => {
+    try {
+      const ctx = await ensureAudioReady();
+      if (!ctx) return;
+      setSoundOn(true);
+      localStorage.setItem('rail-sound-enabled', '1');
+      playBeepDirect(ctx, 1200, 60);
+      setStatus('Sound enabled');
+    } catch {}
+  }, [ensureAudioReady, playBeepDirect]);
+
+  const playBeep = useCallback(
+    (freq = 1500, durationMs = 80) => {
+      try {
+        const ctx = audioCtxRef.current;
+        if (!ctx || !soundOn || ctx.state !== 'running') return;
+        playBeepDirect(ctx, freq, durationMs);
+      } catch {}
+    },
+    [soundOn, playBeepDirect]
+  );
+
+  const okBeep = useCallback(() => playBeep(1500, 80), [playBeep]);
+  const warnBeep = useCallback(() => playBeep(900, 90), [playBeep]);
+  const savedBeep = useCallback(() => playBeep(2000, 140), [playBeep]);
+  const syncBeep = useCallback(() => playBeep(1800, 120), [playBeep]);
+
+  useEffect(() => {
+    if (localStorage.getItem('rail-sound-enabled') === '1') {
+      enableSound();
+    }
+  }, [enableSound]);
+
   const [showDamaged, setShowDamaged] = useState(false);
   const [manualSerial, setManualSerial] = useState('');
 
-  // Duplicate helpers
   const normalizeSerial = (s) => String(s || '').trim().toUpperCase();
   const serialSetRefMain = useRef(new Set());
   const serialSetRefAlt = useRef(new Set());
@@ -365,7 +384,6 @@ export default function App() {
     return localSet.has(key) || knownSet.has(key);
   };
 
-  // ==================== UPDATE PENDING COUNTS ====================
   const updatePendingCounts = useCallback(async () => {
     try {
       const mainItems = await idbAll('main');
@@ -377,80 +395,39 @@ export default function App() {
     }
   }, []);
 
-  // ==================== ONLINE/OFFLINE LISTENERS ====================
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
       setStatus('Back online — ready to sync');
     };
-    
+
     const handleOffline = () => {
       setIsOnline(false);
       setStatus('You are offline — scans will be saved locally');
       warnBeep();
     };
-    
+
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
-    
-    // Initial pending count
+
     updatePendingCounts();
-    
-    // Update pending counts periodically
+
     const interval = setInterval(updatePendingCounts, 5000);
-    
+
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       clearInterval(interval);
     };
-  }, [updatePendingCounts]);
+  }, [updatePendingCounts, warnBeep]);
 
-  // Import known serials (per mode)
-  const importInputRef = useRef(null);
-  const handleImportKnown = async (file) => {
-    try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: 'array' });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
-      const set = getKnownRef().current;
-
-      const headerCandidates = ['serial', 'Serial', 'SERIAL', 'Serial Number', 'SERIAL_NUMBER', 'SN', 'sn'];
-      const firstRow = rows[0] || {};
-      let header = Object.keys(firstRow).find((h) => headerCandidates.includes(h)) || null;
-
-      if (header) {
-        for (const r of rows) {
-          const v = normalizeSerial(r[header]);
-          if (v) set.add(v);
-        }
-      } else {
-        const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-        for (const row of aoa) {
-          const v = normalizeSerial(row?.[0]);
-          if (v) set.add(v);
-        }
-      }
-
-      setKnownMainCount(knownMainRef.current.size);
-      setKnownAltCount(knownAltRef.current.size);
-      setStatus(`Imported known serials (${mode.toUpperCase()}): ${set.size}`);
-      savedBeep();
-    } catch (e) {
-      console.error(e);
-      setStatus('Import failed. Ensure there is a "serial" column or serials in column A.');
-      warnBeep();
-    } finally {
-      if (importInputRef.current) importInputRef.current.value = '';
-    }
-  };
-
-  // Sockets
+  // sockets
   const socketRef = useRef(null);
   useEffect(() => {
     socketRef.current = socket;
-    try { socket.connect(); } catch {}
+    try {
+      socket.connect();
+    } catch {}
 
     const onConnect = () => setStatus('Live sync connected');
     const onDisconnect = (reason) => setStatus(`Live sync disconnected (${reason})`);
@@ -501,12 +478,16 @@ export default function App() {
     };
 
     const onCleared = () => {
-      setScansMain([]); setTotalMain(0); setCursorMain(null);
+      setScansMain([]);
+      setTotalMain(0);
+      setCursorMain(null);
       setStatus('All scans cleared (Main, synced)');
     };
 
     const onClearedAlt = () => {
-      setScansAlt([]); setTotalAlt(0); setCursorAlt(null);
+      setScansAlt([]);
+      setTotalAlt(0);
+      setCursorAlt(null);
       setStatus('All scans cleared (ALT, synced)');
     };
 
@@ -538,7 +519,6 @@ export default function App() {
     };
   }, []);
 
-  // Build fast serial sets
   useEffect(() => {
     const s = new Set();
     for (const r of scansMain) if (r?.serial) s.add(normalizeSerial(r.serial));
@@ -551,7 +531,6 @@ export default function App() {
     serialSetRefAlt.current = s;
   }, [scansAlt]);
 
-  // Initial loads
   const mainLoadedRef = useRef(false);
   const altLoadedRef = useRef(false);
   const PAGE_SIZE = 200;
@@ -563,8 +542,8 @@ export default function App() {
           fetch(api(endpoints.stagedCount(m))),
           fetch(api(`${endpoints.staged(m)}?limit=200`)),
         ]);
-        const countData = await countResp.json().catch(()=>({count:0}));
-        const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
+        const countData = await countResp.json().catch(() => ({ count: 0 }));
+        const pageData = await pageResp.json().catch(() => ({ rows: [], nextCursor: null, total: 0 }));
 
         const normalized = (pageData.rows || []).map((r) => ({
           ...r,
@@ -606,7 +585,7 @@ export default function App() {
     if (!cursor) return;
 
     const resp = await fetch(api(`${endpoints.staged(m)}?limit=${PAGE_SIZE}&cursor=${cursor}`));
-    const data = await resp.json().catch(()=>({rows:[], nextCursor:null}));
+    const data = await resp.json().catch(() => ({ rows: [], nextCursor: null }));
 
     const more = (data.rows || []).map((r) => ({
       ...r,
@@ -627,36 +606,37 @@ export default function App() {
     }
   };
 
-  // ==================== FLUSH QUEUE FUNCTION (ENHANCED) ====================
   const flushQueueForMode = useCallback(async (m) => {
     try {
       const items = await idbAll(m);
       if (items.length === 0) return { flushed: 0 };
-      
-      const payload = items.map(x => x.payload);
+
+      const payload = items.map((x) => x.payload);
       const bulkPath = modeIsAlt(m) ? '/scans-alt/bulk' : '/scans/bulk';
-      
+
       const resp = await fetch(api(bulkPath), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: payload })
+        body: JSON.stringify({ items: payload }),
       });
-      
+
       if (resp.ok) {
-        await idbClear(items.map(x => x.id), m);
-        
-        // Refresh data from server
+        await idbClear(
+          items.map((x) => x.id),
+          m
+        );
+
         const [countResp, pageResp] = await Promise.all([
           fetch(api(endpoints.stagedCount(m))),
           fetch(api(`${endpoints.staged(m)}?limit=${PAGE_SIZE}`)),
         ]);
-        const countData = await countResp.json().catch(()=>({count:0}));
-        const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
+        const countData = await countResp.json().catch(() => ({ count: 0 }));
+        const pageData = await pageResp.json().catch(() => ({ rows: [], nextCursor: null, total: 0 }));
         const normalized = (pageData.rows || []).map((r) => ({
           ...r,
           wagonId1: r.wagon1Id ?? r.wagonId1 ?? '',
           wagonId2: r.wagon2Id ?? r.wagonId2 ?? '',
-          wagonId3: r.wagonId3 ?? r.wagonId3 ?? '',
+          wagonId3: r.wagon3Id ?? r.wagonId3 ?? '',
           receivedAt: r.receivedAt ?? r.recievedAt ?? '',
           loadedAt: r.loadedAt ?? '',
           destination: r.destination ?? r.dest ?? '',
@@ -665,16 +645,16 @@ export default function App() {
         if (modeIsAlt(m)) {
           setScansAlt(normalized);
           setCursorAlt(pageData.nextCursor ?? null);
-          setTotalAlt(pageData.total ?? normalized.length);
+          setTotalAlt(countData.count ?? pageData.total ?? normalized.length);
         } else {
           setScansMain(normalized);
           setCursorMain(pageData.nextCursor ?? null);
-          setTotalMain(pageData.total ?? normalized.length);
+          setTotalMain(countData.count ?? pageData.total ?? normalized.length);
         }
-        
+
         return { flushed: items.length };
       }
-      
+
       return { flushed: 0, error: 'Server returned error' };
     } catch (e) {
       console.warn(`Offline queue flush failed (${m}):`, e.message);
@@ -682,21 +662,20 @@ export default function App() {
     }
   }, []);
 
-  // ==================== MANUAL SYNC FUNCTION ====================
   const handleManualSync = useCallback(async () => {
     if (!isOnline || isSyncing) return;
-    
+
     setIsSyncing(true);
     setStatus('Syncing offline scans...');
-    
+
     try {
       const mainResult = await flushQueueForMode('main');
       const altResult = await flushQueueForMode('alt');
-      
+
       const totalFlushed = (mainResult.flushed || 0) + (altResult.flushed || 0);
-      
+
       await updatePendingCounts();
-      
+
       if (totalFlushed > 0) {
         setStatus(`✓ Synced ${totalFlushed} offline scan${totalFlushed > 1 ? 's' : ''}`);
         syncBeep();
@@ -713,9 +692,8 @@ export default function App() {
     } finally {
       setIsSyncing(false);
     }
-  }, [isOnline, isSyncing, flushQueueForMode, updatePendingCounts]);
+  }, [isOnline, isSyncing, flushQueueForMode, updatePendingCounts, syncBeep, warnBeep]);
 
-  // Flush offline queues when online (both modes) - AUTO SYNC
   useEffect(() => {
     async function flushBoth() {
       if (!isOnline) return;
@@ -723,21 +701,20 @@ export default function App() {
       await flushQueueForMode('alt');
       await updatePendingCounts();
     }
-    
+
     window.addEventListener('online', flushBoth);
     flushBoth();
-    
+
     return () => window.removeEventListener('online', flushBoth);
   }, [isOnline, flushQueueForMode, updatePendingCounts]);
 
-  // FLUSH helper used before export
   async function flushLocalQueueBeforeExport({ useAlt = false } = {}) {
     try {
       const m = useAlt ? 'alt' : 'main';
       const items = await idbAll(m);
       if (!items || items.length === 0) return { flushed: 0 };
 
-      const payload = items.map(x => x.payload || x);
+      const payload = items.map((x) => x.payload || x);
       const url = useAlt ? api('/scans-alt/bulk') : api('/scans/bulk');
 
       const resp = await fetch(url, {
@@ -747,13 +724,16 @@ export default function App() {
       });
 
       if (!resp.ok) {
-        const text = await resp.text().catch(()=> '');
+        const text = await resp.text().catch(() => '');
         console.warn('Bulk upload failed:', text || resp.status);
         return { flushed: 0, error: text || `HTTP ${resp.status}` };
       }
 
-      const body = await resp.json().catch(()=> ({}));
-      await idbClear(items.map(x => x.id), m);
+      const body = await resp.json().catch(() => ({}));
+      await idbClear(
+        items.map((x) => x.id),
+        m
+      );
       await updatePendingCounts();
       return { flushed: payload.length, result: body };
     } catch (e) {
@@ -762,7 +742,6 @@ export default function App() {
     }
   }
 
-  // FAST local duplicate set for current mode
   const scanSerialSet = useMemo(() => {
     const s = new Set();
     for (const r of scans) if (r?.serial) s.add(normalizeSerial(r.serial));
@@ -773,7 +752,6 @@ export default function App() {
   const localHasSerial = (serial) => scanSerialSet.has(normalizeSerial(serial));
   const findDuplicates = (serial) => scans.filter((r) => normalizeSerial(r.serial) === normalizeSerial(serial));
 
-  // highlight existing row
   const [flashSerial, setFlashSerial] = useState(null);
   const flashExistingRow = (serialKey) => {
     if (!serialKey) return;
@@ -785,7 +763,6 @@ export default function App() {
     setTimeout(() => setFlashSerial(null), 2500);
   };
 
-  // SCAN handler
   const onDetected = async (rawText) => {
     const parsed = parseQrPayload(rawText);
     const serial = (parsed.serial || rawText || '').trim();
@@ -965,7 +942,9 @@ export default function App() {
         body: JSON.stringify(rec),
       });
       let data = null;
-      try { data = await resp.json(); } catch {}
+      try {
+        data = await resp.json();
+      } catch {}
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
       const newId = data?.id || Date.now();
@@ -979,10 +958,9 @@ export default function App() {
       setStatus(`Saved to staged (${mode.toUpperCase()})`);
       savedBeep();
     } catch (e) {
-      // Save offline
       await idbAdd({ payload: rec }, mode);
-      await updatePendingCounts(); // Update pending count
-      
+      await updatePendingCounts();
+
       setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
       setTotalCount((c) => c + 1);
 
@@ -1054,11 +1032,11 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rec),
       });
-      const data = await resp.json().catch(()=>null);
+      const data = await resp.json().catch(() => null);
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
       const newId = data?.id || Date.now();
-      setScans((prev) => [{ id: newId, ...rec }, ...prev ]);
+      setScans((prev) => [{ id: newId, ...rec }, ...prev]);
       setTotalCount((c) => c + 1);
 
       const set = getKnownRef().current;
@@ -1071,11 +1049,10 @@ export default function App() {
       setStatus(`Damaged QR saved (${mode.toUpperCase()})`);
       savedBeep();
     } catch (e) {
-      // Save offline
       await idbAdd({ payload: rec }, mode);
-      await updatePendingCounts(); // Update pending count
-      
-      setScans((prev) => [{ id: Date.now(), ...rec }, ...prev ]);
+      await updatePendingCounts();
+
+      setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
       setTotalCount((c) => c + 1);
 
       const set = getKnownRef().current;
@@ -1090,27 +1067,27 @@ export default function App() {
     }
   };
 
-  // ---------- EXPORT helpers ----------
   const [exporting, setExporting] = useState(false);
 
-  // Helper to fetch staged rows from server (non-destructive)
   async function fetchAllStagedRows(m) {
     const rows = [];
     try {
       let cursor = null;
       const limit = 1000;
       while (true) {
-        const url = api(`${endpoints.staged(m)}?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+        const url = api(
+          `${endpoints.staged(m)}?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
+        );
         const resp = await fetch(url);
         if (!resp.ok) throw new Error(`Failed to fetch staged rows (${resp.status})`);
-        const data = await resp.json().catch(()=>({ rows: [], nextCursor: null }));
+        const data = await resp.json().catch(() => ({ rows: [], nextCursor: null }));
         const pageRows = data.rows || [];
         for (const r of pageRows) {
           rows.push({
             ...r,
             wagonId1: r.wagon1Id ?? r.wagonId1 ?? '',
             wagonId2: r.wagon2Id ?? r.wagonId2 ?? '',
-            wagonId3: r.wagonId3 ?? r.wagonId3 ?? '',
+            wagonId3: r.wagon3Id ?? r.wagonId3 ?? '',
             receivedAt: r.receivedAt ?? r.recievedAt ?? '',
             loadedAt: r.loadedAt ?? '',
             destination: r.destination ?? r.dest ?? '',
@@ -1126,18 +1103,27 @@ export default function App() {
     return rows;
   }
 
-  // Helper: Export data to Excel locally (works offline)
   const exportLocalToExcel = async (rows, filenamePrefix) => {
     try {
       const HEADERS = [
-        'Serial', 'Stage', 'Operator',
-        'Wagon1ID', 'Wagon2ID', 'Wagon3ID',
-        'ReceivedAt', 'LoadedAt', 'Destination',
-        'Grade', 'RailType', 'Spec', 'Length',
-        'QRRaw', 'Timestamp'
+        'Serial',
+        'Stage',
+        'Operator',
+        'Wagon1ID',
+        'Wagon2ID',
+        'Wagon3ID',
+        'ReceivedAt',
+        'LoadedAt',
+        'Destination',
+        'Grade',
+        'RailType',
+        'Spec',
+        'Length',
+        'QRRaw',
+        'Timestamp',
       ];
-      
-      const dataRows = rows.map(s => ([
+
+      const dataRows = rows.map((s) => [
         s.serial || '',
         s.stage || '',
         s.operator || '',
@@ -1153,16 +1139,16 @@ export default function App() {
         s.lengthM || '',
         s.qrRaw || '',
         s.timestamp || '',
-      ]));
-      
+      ]);
+
       const aoa = [HEADERS, ...dataRows];
       const ws = XLSX.utils.aoa_to_sheet(aoa);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Scans');
-      
+
       const filename = `${filenamePrefix}_${new Date().toISOString().replace(/[:.]/g, '-')}.xlsx`;
       XLSX.writeFile(wb, filename);
-      
+
       return { success: true, filename, count: rows.length };
     } catch (e) {
       console.error('Local export failed:', e);
@@ -1170,25 +1156,19 @@ export default function App() {
     }
   };
 
-  // Exports per mode (handles offline)
   const exportXlsmForMode = async (m) => {
     try {
-      // Get offline items for this mode
       const offlineItems = await idbAll(m);
-      const offlineRows = offlineItems.map(x => x.payload || x);
-      
-      // If we're offline, export locally
+      const offlineRows = offlineItems.map((x) => x.payload || x);
+
       if (!isOnline) {
         setStatus('Offline — exporting local data...');
-        
-        // Combine displayed scans + offline queue
+
         const displayedScans = modeIsAlt(m) ? scansAlt : scansMain;
-        
-        // Merge: offline items might already be in displayed scans, so dedupe by serial
+
         const seenSerials = new Set();
         const allRows = [];
-        
-        // Add displayed scans first
+
         for (const scan of displayedScans) {
           const key = normalizeSerial(scan.serial);
           if (key && !seenSerials.has(key)) {
@@ -1196,8 +1176,7 @@ export default function App() {
             allRows.push(scan);
           }
         }
-        
-        // Add offline items that aren't already included
+
         for (const row of offlineRows) {
           const key = normalizeSerial(row.serial);
           if (key && !seenSerials.has(key)) {
@@ -1205,15 +1184,15 @@ export default function App() {
             allRows.push(row);
           }
         }
-        
+
         if (allRows.length === 0) {
           alert('No scans to export.');
           setStatus('No scans to export');
           return;
         }
-        
+
         const result = await exportLocalToExcel(allRows, modeIsAlt(m) ? 'Alt_Offline' : 'Master_Offline');
-        
+
         if (result.success) {
           setStatus(`Exported ${result.count} scans (offline) — ${result.filename}`);
           savedBeep();
@@ -1222,18 +1201,16 @@ export default function App() {
         }
         return;
       }
-      
-      // Online: Try to sync first, then export from server
+
       setStatus('Preparing export — syncing local queue...');
       const flush = await flushLocalQueueBeforeExport({ useAlt: modeIsAlt(m) });
       if (flush.error) {
         const ok = confirm('Failed to sync offline scans to server. Export local data instead?');
         if (ok) {
-          // Fall back to local export
           const displayedScans = modeIsAlt(m) ? scansAlt : scansMain;
           const seenSerials = new Set();
           const allRows = [];
-          
+
           for (const scan of displayedScans) {
             const key = normalizeSerial(scan.serial);
             if (key && !seenSerials.has(key)) {
@@ -1248,7 +1225,7 @@ export default function App() {
               allRows.push(row);
             }
           }
-          
+
           const result = await exportLocalToExcel(allRows, modeIsAlt(m) ? 'Alt_Local' : 'Master_Local');
           if (result.success) {
             setStatus(`Exported ${result.count} scans (local) — ${result.filename}`);
@@ -1279,9 +1256,11 @@ export default function App() {
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url; a.download = filename;
+      a.href = url;
+      a.download = filename;
       document.body.appendChild(a);
-      a.click(); a.remove();
+      a.click();
+      a.remove();
       URL.revokeObjectURL(url);
       setStatus(`Exported ${filename}`);
     } catch (e) {
@@ -1296,20 +1275,18 @@ export default function App() {
   const exportXlsxWithImages = async () => {
     if (exporting) return;
     setExporting(true);
-    
+
     try {
-      // Get offline items for current mode
       const offlineItems = await idbAll(mode);
-      const offlineRows = offlineItems.map(x => x.payload || x);
-      
-      // If we're offline, export locally (without QR images since we can't generate them client-side easily)
+      const offlineRows = offlineItems.map((x) => x.payload || x);
+
       if (!isOnline) {
         setStatus('Offline — exporting local data (without QR images)...');
-        
+
         const displayedScans = scans;
         const seenSerials = new Set();
         const allRows = [];
-        
+
         for (const scan of displayedScans) {
           const key = normalizeSerial(scan.serial);
           if (key && !seenSerials.has(key)) {
@@ -1324,16 +1301,16 @@ export default function App() {
             allRows.push(row);
           }
         }
-        
+
         if (allRows.length === 0) {
           alert('No scans to export.');
           setStatus('No scans to export');
           setExporting(false);
           return;
         }
-        
+
         const result = await exportLocalToExcel(allRows, modeIsAlt(mode) ? 'Alt_Offline' : 'Master_Offline');
-        
+
         if (result.success) {
           setStatus(`Exported ${result.count} scans (offline, no QR images) — ${result.filename}`);
           savedBeep();
@@ -1343,8 +1320,7 @@ export default function App() {
         setExporting(false);
         return;
       }
-      
-      // Online: Try to sync first
+
       setStatus('Preparing export (images) — syncing local queue...');
       const flush = await flushLocalQueueBeforeExport({ useAlt: modeIsAlt(mode) });
       if (flush.error) {
@@ -1353,7 +1329,7 @@ export default function App() {
           const displayedScans = scans;
           const seenSerials = new Set();
           const allRows = [];
-          
+
           for (const scan of displayedScans) {
             const key = normalizeSerial(scan.serial);
             if (key && !seenSerials.has(key)) {
@@ -1368,7 +1344,7 @@ export default function App() {
               allRows.push(row);
             }
           }
-          
+
           const result = await exportLocalToExcel(allRows, modeIsAlt(mode) ? 'Alt_Local' : 'Master_Local');
           if (result.success) {
             setStatus(`Exported ${result.count} scans (local, no QR images) — ${result.filename}`);
@@ -1401,9 +1377,11 @@ export default function App() {
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url; a.download = filename;
+      a.href = url;
+      a.download = filename;
       document.body.appendChild(a);
-      a.click(); a.remove();
+      a.click();
+      a.remove();
       URL.revokeObjectURL(url);
       setStatus(`Exported ${filename}`);
     } catch (e) {
@@ -1415,7 +1393,6 @@ export default function App() {
     }
   };
 
-  // Password-protected clear for current mode
   const clearAllForCurrentMode = async () => {
     const pw = window.prompt(`Enter password to clear ALL ${mode.toUpperCase()} scans:`);
     if (pw == null) return;
@@ -1426,13 +1403,17 @@ export default function App() {
     try {
       const resp = await fetch(api(endpoints.clearAll(mode)), { method: 'POST' });
       if (!resp.ok) {
-        const txt = await resp.text().catch(()=> '');
+        const txt = await resp.text().catch(() => '');
         throw new Error(txt || `HTTP ${resp.status}`);
       }
       if (modeIsAlt(mode)) {
-        setScansAlt([]); setTotalAlt(0); setCursorAlt(null);
+        setScansAlt([]);
+        setTotalAlt(0);
+        setCursorAlt(null);
       } else {
-        setScansMain([]); setTotalMain(0); setCursorMain(null);
+        setScansMain([]);
+        setTotalMain(0);
+        setCursorMain(null);
       }
       setStatus(`${mode.toUpperCase()} scans cleared`);
       savedBeep();
@@ -1444,18 +1425,29 @@ export default function App() {
     }
   };
 
-  // ---------- RENDER ----------
   if (showStart) {
     return (
       <div style={{ minHeight: '100vh', background: '#fff' }}>
         <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
           <StartPage
-            onStartMain={() => { setMode('main'); setShowStart(false); }}
-            onStartAlt={() => { setMode('alt'); setShowStart(false); }}
+            onStartMain={() => {
+              setMode('main');
+              setShowStart(false);
+            }}
+            onStartAlt={() => {
+              setMode('alt');
+              setShowStart(false);
+            }}
             onExportMain={() => exportXlsmForMode('main')}
             onExportAlt={() => exportXlsmForMode('alt')}
-            onContinue={() => { setMode('main'); setShowStart(false); }}
-            onStartScan={() => { setMode('main'); setShowStart(false); }}
+            onContinue={() => {
+              setMode('main');
+              setShowStart(false);
+            }}
+            onStartScan={() => {
+              setMode('main');
+              setShowStart(false);
+            }}
             onExport={() => exportXlsmForMode('main')}
             operator={operator}
             setOperator={setOperator}
@@ -1468,27 +1460,42 @@ export default function App() {
   return (
     <div className="container" style={{ paddingTop: 20, paddingBottom: 20 }}>
       <header className="app-header">
-        <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div
+          className="container"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+            flexWrap: 'wrap',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
             <div className="logo" />
-            <div>
+            <div style={{ minWidth: 0 }}>
               <div className="title">Rail Inventory ({mode.toUpperCase()}){knownBadge}</div>
               <div className="status">{status}</div>
             </div>
           </div>
 
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            {/* ==================== OFFLINE INDICATOR ==================== */}
             <OfflineIndicator
               isOnline={isOnline}
               pendingCount={totalPendingCount}
               isSyncing={isSyncing}
               onManualSync={handleManualSync}
             />
-            
-            <button className="btn btn-outline" onClick={() => setShowStart(true)}>Back to Start</button>
 
-            <div className="btn-group" role="group" aria-label="mode">
+            <button className="btn btn-outline" onClick={() => setShowStart(true)}>
+              Back to Start
+            </button>
+
+            <div
+              className="btn-group"
+              role="group"
+              aria-label="mode"
+              style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}
+            >
               <button
                 className={`btn ${mode === 'main' ? '' : 'btn-outline'}`}
                 onClick={() => setMode('main')}
@@ -1496,19 +1503,22 @@ export default function App() {
               >
                 MAIN
                 {pendingMainCount > 0 && (
-                  <span style={{
-                    marginLeft: 4,
-                    padding: '1px 5px',
-                    borderRadius: 8,
-                    background: '#f59e0b',
-                    color: '#fff',
-                    fontSize: 10,
-                    fontWeight: 700,
-                  }}>
+                  <span
+                    style={{
+                      marginLeft: 4,
+                      padding: '1px 5px',
+                      borderRadius: 8,
+                      background: '#f59e0b',
+                      color: '#fff',
+                      fontSize: 10,
+                      fontWeight: 700,
+                    }}
+                  >
                     {pendingMainCount}
                   </span>
                 )}
               </button>
+
               <button
                 className={`btn ${mode === 'alt' ? '' : 'btn-outline'}`}
                 onClick={() => setMode('alt')}
@@ -1516,15 +1526,17 @@ export default function App() {
               >
                 ALT
                 {pendingAltCount > 0 && (
-                  <span style={{
-                    marginLeft: 4,
-                    padding: '1px 5px',
-                    borderRadius: 8,
-                    background: '#f59e0b',
-                    color: '#fff',
-                    fontSize: 10,
-                    fontWeight: 700,
-                  }}>
+                  <span
+                    style={{
+                      marginLeft: 4,
+                      padding: '1px 5px',
+                      borderRadius: 8,
+                      background: '#f59e0b',
+                      color: '#fff',
+                      fontSize: 10,
+                      fontWeight: 700,
+                    }}
+                  >
                     {pendingAltCount}
                   </span>
                 )}
@@ -1534,35 +1546,17 @@ export default function App() {
             <button className="btn" onClick={enableSound}>
               {soundOn ? '🔊 Sound On' : '🔈 Enable Sound'}
             </button>
-
-            <button className="btn btn-outline" onClick={() => importInputRef.current?.click()}>
-              Import Known Serials ({mode.toUpperCase()})
-            </button>
-            <input
-              ref={importInputRef}
-              type="file"
-              accept=".xlsx,.xls,.csv"
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) handleImportKnown(f);
-              }}
-            />
-
-            <button
-              className="btn btn-outline"
-              onClick={clearAllForCurrentMode}
-              title={`Clear all ${mode.toUpperCase()} scans (password required)`}
-              style={{ borderColor: 'rgb(220,38,38)', color: 'rgb(220,38,38)' }}
-            >
-              Clear {mode.toUpperCase()} Scans
-            </button>
           </div>
         </div>
       </header>
 
-      <div className="grid" style={{ marginTop: 20 }}>
-        {/* Scanner */}
+      <div
+        className="grid"
+        style={{
+          marginTop: 20,
+          gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+        }}
+      >
         <section className="card">
           <div
             style={{
@@ -1570,7 +1564,7 @@ export default function App() {
               alignItems: 'center',
               justifyContent: 'space-between',
               gap: 8,
-              flexWrap: 'wrap'
+              flexWrap: 'wrap',
             }}
           >
             <h3 style={{ margin: 0 }}>Scanner</h3>
@@ -1589,16 +1583,24 @@ export default function App() {
 
           {pending && (
             <div className="notice" style={{ marginTop: 10 }}>
-              <div><strong>Pending Serial:</strong> {pending.serial}</div>
+              <div>
+                <strong>Pending Serial:</strong> {pending.serial}
+              </div>
               <div className="meta">Captured at: {new Date(pending.capturedAt).toLocaleString()}</div>
             </div>
           )}
         </section>
 
-        {/* Controls */}
         <section className="card">
           <h3>Controls ({mode.toUpperCase()})</h3>
-          <div className="controls-grid" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+          <div
+            className="controls-grid"
+            style={{
+              display: 'grid',
+              gap: 12,
+              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+            }}
+          >
             <div>
               <label className="status">Operator</label>
               <input className="input" value={operator} onChange={(e) => setOperator(e.target.value)} />
@@ -1606,20 +1608,35 @@ export default function App() {
 
             <div>
               <label className="status">Wagon ID</label>
-              <input className="input" value={wagonId1} onChange={(e) => setWagonId1(e.target.value)} placeholder="e.g. WGN-0123" />
+              <input
+                className="input"
+                value={wagonId1}
+                onChange={(e) => setWagonId1(e.target.value)}
+                placeholder="e.g. WGN-0123"
+              />
             </div>
             <div>
               <label className="status">Wagon ID</label>
-              <input className="input" value={wagonId2} onChange={(e) => setWagonId2(e.target.value)} placeholder="e.g. WGN-0456" />
+              <input
+                className="input"
+                value={wagonId2}
+                onChange={(e) => setWagonId2(e.target.value)}
+                placeholder="e.g. WGN-0456"
+              />
             </div>
             <div>
               <label className="status">Wagon ID</label>
-              <input className="input" value={wagonId3} onChange={(e) => setWagonId3(e.target.value)} placeholder="e.g. WGN-0789" />
+              <input
+                className="input"
+                value={wagonId3}
+                onChange={(e) => setWagonId3(e.target.value)}
+                placeholder="e.g. WGN-0789"
+              />
             </div>
 
             <div>
               <label className="status">Received at</label>
-              <input className="input" value={receivedAt} onChange={(e) => setReceivedAt(e.target.value)} placeholder="" />
+              <input className="input" value={receivedAt} onChange={(e) => setReceivedAt(e.target.value)} />
             </div>
             <div>
               <label className="status">Loaded at</label>
@@ -1655,10 +1672,16 @@ export default function App() {
           </div>
 
           <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button className="btn" onClick={confirmPending} disabled={!pending}>Confirm & Save</button>
+            <button className="btn" onClick={confirmPending} disabled={!pending}>
+              Confirm & Save
+            </button>
             <button
               className="btn btn-outline"
-              onClick={() => { setPending(null); setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' }); setStatus('Ready'); }}
+              onClick={() => {
+                setPending(null);
+                setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
+                setStatus('Ready');
+              }}
             >
               Discard
             </button>
@@ -1670,11 +1693,13 @@ export default function App() {
             </button>
           </div>
 
-          {/* Damaged QR */}
           <div style={{ marginTop: 16 }}>
             <button
               className="btn btn-outline"
-              onClick={() => { if (!soundOn) enableSound(); setShowDamaged(v => !v); }}
+              onClick={() => {
+                if (!soundOn) enableSound();
+                setShowDamaged((v) => !v);
+              }}
               aria-expanded={showDamaged}
               aria-controls="damaged-panel"
             >
@@ -1690,7 +1715,7 @@ export default function App() {
                   style={{
                     display: 'grid',
                     gap: 12,
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))'
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
                   }}
                 >
                   <div>
@@ -1722,27 +1747,30 @@ export default function App() {
                 </div>
 
                 <div style={{ marginTop: 12 }}>
-                  <button className="btn" onClick={saveDamaged}>Save Damaged QR</button>
+                  <button className="btn" onClick={saveDamaged}>
+                    Save Damaged QR
+                  </button>
                 </div>
               </div>
             )}
           </div>
         </section>
 
-        {/* Staged Scans */}
         <section className="card">
           <h3>
             Staged Scans ({totalCount}) — {mode.toUpperCase()}
             {currentModePendingCount > 0 && (
-              <span style={{
-                marginLeft: 8,
-                padding: '2px 8px',
-                borderRadius: 8,
-                background: '#f59e0b',
-                color: '#fff',
-                fontSize: 12,
-                fontWeight: 600,
-              }}>
+              <span
+                style={{
+                  marginLeft: 8,
+                  padding: '2px 8px',
+                  borderRadius: 8,
+                  background: '#f59e0b',
+                  color: '#fff',
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              >
                 +{currentModePendingCount} pending sync
               </span>
             )}
@@ -1755,7 +1783,7 @@ export default function App() {
                 data-serial={(s.serial || '').toString().trim().toUpperCase()}
                 style={{
                   background:
-                    (flashSerial && (s.serial || '').toString().trim().toUpperCase() === flashSerial)
+                    flashSerial && (s.serial || '').toString().trim().toUpperCase() === flashSerial
                       ? '#fff3cd'
                       : undefined,
                   transition: 'background 0.3s ease',
@@ -1767,7 +1795,9 @@ export default function App() {
                 </div>
 
                 {(s.wagonId1 || s.wagonId2 || s.wagonId3) && (
-                  <div className="meta">Wagon IDs: {[s.wagonId1, s.wagonId2, s.wagonId3].filter(Boolean).join(' • ')}</div>
+                  <div className="meta">
+                    Wagon IDs: {[s.wagonId1, s.wagonId2, s.wagonId3].filter(Boolean).join(' • ')}
+                  </div>
                 )}
 
                 {(s.receivedAt || s.loadedAt) && (
@@ -1778,26 +1808,42 @@ export default function App() {
                   </div>
                 )}
 
-                {s.destination && (
-                  <div className="meta">Destination: {s.destination}</div>
-                )}
+                {s.destination && <div className="meta">Destination: {s.destination}</div>}
 
-                <div className="meta">
-                  {[s.grade, s.railType, s.spec, s.lengthM].filter(Boolean).join(' • ')}
-                </div>
+                <div className="meta">{[s.grade, s.railType, s.spec, s.lengthM].filter(Boolean).join(' • ')}</div>
 
-                <button className="btn btn-outline" onClick={() => handleRemoveScan(s.id)}>Remove</button>
+                <button className="btn btn-outline" onClick={() => handleRemoveScan(s.id)}>
+                  Remove
+                </button>
               </div>
             ))}
           </div>
 
           {nextCursor && (
             <div style={{ marginTop: 10 }}>
-              <button className="btn btn-outline" onClick={loadMore}>Load more</button>
+              <button className="btn btn-outline" onClick={loadMore}>
+                Load more
+              </button>
             </div>
           )}
         </section>
       </div>
+
+      {/* clear moved to bottom */}
+      <section className="card" style={{ marginTop: 20 }}>
+        <h3 style={{ color: 'rgb(220,38,38)' }}>Danger Zone</h3>
+        <div className="status" style={{ marginBottom: 12 }}>
+          Clear all staged scans for the current mode. Password required.
+        </div>
+        <button
+          className="btn btn-outline"
+          onClick={clearAllForCurrentMode}
+          title={`Clear all ${mode.toUpperCase()} scans (password required)`}
+          style={{ borderColor: 'rgb(220,38,38)', color: 'rgb(220,38,38)' }}
+        >
+          Clear {mode.toUpperCase()} Scans
+        </button>
+      </section>
 
       <footer className="footer">
         <div className="footer-inner">
@@ -1806,24 +1852,56 @@ export default function App() {
         </div>
       </footer>
 
-      {/* Remove confirmation */}
       {removePrompt && (
         <div
           role="dialog"
           aria-modal="true"
-          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(2,6,23,.55)',
+            display: 'grid',
+            placeItems: 'center',
+            zIndex: 50,
+            padding: 16,
+          }}
         >
-          <div className="card" style={{ maxWidth: 520, width: '100%', border: '1px solid var(--border)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}>
+          <div
+            className="card"
+            style={{
+              maxWidth: 520,
+              width: '100%',
+              border: '1px solid var(--line)',
+              boxShadow: '0 20px 60px rgba(2,6,23,.35)',
+            }}
+          >
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-              <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(220,38,38,.1)', color: 'rgb(220,38,38)', fontSize: 22 }}>⚠️</div>
+              <div
+                style={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 9999,
+                  display: 'grid',
+                  placeItems: 'center',
+                  background: 'rgba(220,38,38,.1)',
+                  color: 'rgb(220,38,38)',
+                  fontSize: 22,
+                }}
+              >
+                ⚠️
+              </div>
               <div style={{ flex: 1 }}>
                 <h3 style={{ margin: 0 }}>Are you sure?</h3>
                 <div className="status" style={{ marginTop: 6 }}>
                   Remove this staged scan from the {mode.toUpperCase()} list?
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-                  <button className="btn btn-outline" onClick={discardRemovePrompt}>Cancel</button>
-                  <button className="btn" onClick={confirmRemoveScan}>Confirm</button>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+                  <button className="btn btn-outline" onClick={discardRemovePrompt}>
+                    Cancel
+                  </button>
+                  <button className="btn" onClick={confirmRemoveScan}>
+                    Confirm
+                  </button>
                 </div>
               </div>
             </div>
@@ -1831,24 +1909,57 @@ export default function App() {
         </div>
       )}
 
-      {/* Duplicate modal */}
       {dupPrompt && (
         <div
           role="dialog"
           aria-modal="true"
-          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(2,6,23,.55)',
+            display: 'grid',
+            placeItems: 'center',
+            zIndex: 50,
+            padding: 16,
+          }}
         >
-          <div className="card" style={{ maxWidth: 560, width: '100%', border: '1px solid var(--border)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}>
+          <div
+            className="card"
+            style={{
+              maxWidth: 560,
+              width: '100%',
+              border: '1px solid var(--line)',
+              boxShadow: '0 20px 60px rgba(2,6,23,.35)',
+            }}
+          >
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-              <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(251,191,36,.15)', color: 'rgb(202,138,4)', fontSize: 22 }}>⚠️</div>
+              <div
+                style={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 9999,
+                  display: 'grid',
+                  placeItems: 'center',
+                  background: 'rgba(251,191,36,.15)',
+                  color: 'rgb(202,138,4)',
+                  fontSize: 22,
+                }}
+              >
+                ⚠️
+              </div>
               <div style={{ flex: 1 }}>
                 <h3 style={{ margin: 0 }}>Duplicate detected</h3>
                 <div className="status" style={{ marginTop: 6 }}>
-                  The serial <strong>{dupPrompt.serial}</strong> already exists in the {mode.toUpperCase()} staged list ({dupPrompt.matches?.length ?? 1}).
+                  The serial <strong>{dupPrompt.serial}</strong> already exists in the {mode.toUpperCase()} staged
+                  list ({dupPrompt.matches?.length ?? 1}).
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-                  <button className="btn btn-outline" onClick={handleDupDiscard}>Discard</button>
-                  <button className="btn" onClick={handleDupContinue}>Continue anyway</button>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+                  <button className="btn btn-outline" onClick={handleDupDiscard}>
+                    Discard
+                  </button>
+                  <button className="btn" onClick={handleDupContinue}>
+                    Continue anyway
+                  </button>
                 </div>
               </div>
             </div>

@@ -3,6 +3,7 @@ import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react'
 import { socket } from './socket';
 import Scanner from './scanner/Scanner.jsx';
 import StartPage from './StartPage.jsx';
+import AdminPanel from './AdminPanel.jsx';
 import './app.css';
 import * as XLSX from 'xlsx';
 
@@ -250,6 +251,7 @@ if (!document.querySelector('style[data-offline-indicator]')) {
 export default function App() {
   const [mode, setMode] = useState('main');
   const [showStart, setShowStart] = useState(true);
+  const [showAdmin, setShowAdmin] = useState(false);
 
   const [status, setStatus] = useState('Ready');
 
@@ -290,7 +292,6 @@ export default function App() {
   const [dupPrompt, setDupPrompt] = useState(null);
   const [removePrompt, setRemovePrompt] = useState(null);
 
-  // Sound: on by default, only muted if explicitly saved as muted
   const audioCtxRef = useRef(null);
   const [soundOn, setSoundOn] = useState(() => localStorage.getItem('rail-sound-muted') !== '1');
 
@@ -1035,40 +1036,6 @@ export default function App() {
 
   const [exporting, setExporting] = useState(false);
 
-  async function fetchAllStagedRows(m) {
-    const rows = [];
-    try {
-      let cursor = null;
-      const limit = 1000;
-      while (true) {
-        const url = api(
-          `${endpoints.staged(m)}?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
-        );
-        const resp = await fetch(url);
-        if (!resp.ok) throw new Error(`Failed to fetch staged rows (${resp.status})`);
-        const data = await resp.json().catch(() => ({ rows: [], nextCursor: null }));
-        const pageRows = data.rows || [];
-        for (const r of pageRows) {
-          rows.push({
-            ...r,
-            wagonId1: r.wagon1Id ?? r.wagonId1 ?? '',
-            wagonId2: r.wagon2Id ?? r.wagonId2 ?? '',
-            wagonId3: r.wagon3Id ?? r.wagonId3 ?? '',
-            receivedAt: r.receivedAt ?? r.recievedAt ?? '',
-            loadedAt: r.loadedAt ?? '',
-            destination: r.destination ?? r.dest ?? '',
-          });
-        }
-        if (!data.nextCursor) break;
-        cursor = data.nextCursor;
-      }
-    } catch (e) {
-      console.error('fetchAllStagedRows error:', e);
-      throw e;
-    }
-    return rows;
-  }
-
   const exportLocalToExcel = async (rows, filenamePrefix) => {
     try {
       const HEADERS = [
@@ -1385,6 +1352,16 @@ export default function App() {
     }
   };
 
+  if (showAdmin) {
+    return (
+      <div style={{ minHeight: '100vh', background: '#fff' }}>
+        <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
+          <AdminPanel onBack={() => setShowAdmin(false)} />
+        </div>
+      </div>
+    );
+  }
+
   if (showStart) {
     return (
       <div style={{ minHeight: '100vh', background: '#fff' }}>
@@ -1415,6 +1392,7 @@ export default function App() {
             onExport={() => exportXlsmForMode('main')}
             operator={operator}
             setOperator={setOperator}
+            onOpenAdmin={() => setShowAdmin(true)}
           />
         </div>
       </div>

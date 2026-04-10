@@ -291,15 +291,13 @@ export default function App() {
   const [removePrompt, setRemovePrompt] = useState(null);
 
   // sound
+  // Sound
   const audioCtxRef = useRef(null);
-  const [soundOn, setSoundOn] = useState(false);
+  const [soundOn, setSoundOn] = useState(() => localStorage.getItem('rail-sound-muted') !== '1');
 
   const ensureAudioReady = useCallback(async () => {
     const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) {
-      alert('AudioContext not supported on this device/browser.');
-      return null;
-    }
+    if (!Ctx) return null;
 
     if (!audioCtxRef.current) {
       audioCtxRef.current = new Ctx();
@@ -327,38 +325,29 @@ export default function App() {
     } catch {}
   }, []);
 
-  const enableSound = useCallback(async () => {
-    try {
-      const ctx = await ensureAudioReady();
-      if (!ctx) return;
-      setSoundOn(true);
-      localStorage.setItem('rail-sound-enabled', '1');
-      playBeepDirect(ctx, 1200, 60);
-      setStatus('Sound enabled');
-    } catch {}
-  }, [ensureAudioReady, playBeepDirect]);
-
   const playBeep = useCallback(
-    (freq = 1500, durationMs = 80) => {
+    async (freq = 1500, durationMs = 80) => {
       try {
-        const ctx = audioCtxRef.current;
-        if (!ctx || !soundOn || ctx.state !== 'running') return;
+        if (!soundOn) return;
+        const ctx = await ensureAudioReady();
+        if (!ctx || ctx.state !== 'running') return;
         playBeepDirect(ctx, freq, durationMs);
       } catch {}
     },
-    [soundOn, playBeepDirect]
+    [soundOn, ensureAudioReady, playBeepDirect]
   );
 
-  const okBeep = useCallback(() => playBeep(1500, 80), [playBeep]);
-  const warnBeep = useCallback(() => playBeep(900, 90), [playBeep]);
-  const savedBeep = useCallback(() => playBeep(2000, 140), [playBeep]);
-  const syncBeep = useCallback(() => playBeep(1800, 120), [playBeep]);
+  const scanBeep = useCallback(() => {
+    playBeep(1500, 80);
+  }, [playBeep]);
 
-  useEffect(() => {
-    if (localStorage.getItem('rail-sound-enabled') === '1') {
-      enableSound();
-    }
-  }, [enableSound]);
+  const toggleSound = useCallback(() => {
+    setSoundOn((prev) => {
+      const next = !prev;
+      localStorage.setItem('rail-sound-muted', next ? '0' : '1');
+      return next;
+    });
+  }, []);
 
   const [showDamaged, setShowDamaged] = useState(false);
   const [manualSerial, setManualSerial] = useState('');

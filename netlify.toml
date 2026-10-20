@@ -1,27 +1,28 @@
+
 [build]
   command = "npm install && npm run build"
   publish = "dist"
+
 [build.environment]
   NODE_VERSION = "20"
-  VITE_SOCKET_URL = "https://rail-backend-v27f.onrender.com"
-  VITE_API_BASE = "https://rail-backend-v27f.onrender.com"
+  VITE_SOCKET_URL = "https://pwa-railway-backend-4.onrender.com"
+  VITE_API_BASE = "https://pwa-railway-backend-4.onrender.com"
 
-# Proxy REST
+# REST API proxy
 [[redirects]]
   from = "/api/*"
-  to = "https://rail-backend-v27f.onrender.com/api/:splat"
+  to = "https://pwa-railway-backend-4.onrender.com/api/:splat"
   status = 200
   force = true
 
-# ✅ Proxy Socket.IO (websocket + polling)
+# Socket.IO proxy
 [[redirects]]
   from = "/socket.io/*"
-  to = "https://rail-backend-v27f.onrender.com/socket.io/:splat"
+  to = "https://pwa-railway-backend-4.onrender.com/socket.io/:splat"
   status = 200
   force = true
-  headers = { Connection = "upgrade" }
 
-# SPA fallback
+# React SPA fallback
 [[redirects]]
   from = "/*"
   to = "/index.html"

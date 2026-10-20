@@ -174,7 +174,34 @@ function StatCard({ label, value, icon, color }) {
   );
 }
 
-export default function AdminPanel({ onBack }) {
+export default function AdminPanel({ onBack, onCheckRecovery, onBackupRecovery, onForceRecoverySync }) {
+  const [recoveryCounts, setRecoveryCounts] = useState(null);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryMessage, setRecoveryMessage] = useState('');
+  const runRecoveryAction = async (action) => {
+    setRecoveryBusy(true);
+    setRecoveryMessage('');
+    try {
+      if (action === 'check') {
+        const counts = await onCheckRecovery();
+        setRecoveryCounts(counts);
+        setRecoveryMessage(`Found ${counts.total} pending scans on this device.`);
+      } else if (action === 'backup') {
+        const counts = await onBackupRecovery();
+        setRecoveryCounts(counts);
+        setRecoveryMessage('Backup download requested. Save the JSON file to Files on this iPhone before syncing.');
+      } else if (action === 'sync') {
+        if (!window.confirm('Have you saved and checked the JSON backup in Files on this iPhone? This recovery build will retain local records after upload. Do not retry until the server records are verified.')) return;
+        const result = await onForceRecoverySync();
+        setRecoveryCounts(await onCheckRecovery());
+        setRecoveryMessage(`Upload attempted: ${result.synced} accepted by HTTP; ${result.remaining} intentionally retained locally for verification.${result.errors.length ? ' Errors: ' + result.errors.join('; ') : ''} Verify the records in the server inventory before discarding your backup.`);
+      }
+    } catch (error) {
+      setRecoveryMessage(`Operation failed: ${error.message || error}`);
+    } finally {
+      setRecoveryBusy(false);
+    }
+  };
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all'); // all, create, delete, restore
@@ -304,6 +331,23 @@ export default function AdminPanel({ onBack }) {
         </div>
       </section>
       
+      {/* Device-local offline recovery: only reads this browser's IndexedDB */}
+      <section className="card" style={{ padding: 18 }}>
+        <h3 style={{ marginTop: 0 }}>🔄 Offline Scan Recovery</h3>
+        <p style={{ color: 'var(--muted)', fontSize: 14 }}>
+          Use this on the original iPhone where scans were recorded. Back up pending scans before forcing synchronization.
+          Scans visible in the inventory are not necessarily queued for sync.
+        </p>
+        <p><strong>Pending on this device:</strong> {recoveryCounts ? `${recoveryCounts.total} (Main: ${recoveryCounts.main}, ALT: ${recoveryCounts.alt})` : 'Not checked'}</p>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <button type="button" className="btn btn-outline" disabled={recoveryBusy} onClick={() => runRecoveryAction('check')}>Check Local Scans</button>
+          <button type="button" className="btn btn-outline" disabled={recoveryBusy} onClick={() => runRecoveryAction('backup')}>Download Backup</button>
+          <button type="button" className="btn" disabled={recoveryBusy} onClick={() => runRecoveryAction('sync')}>{recoveryBusy ? 'Working…' : 'Force Sync'}</button>
+        </div>
+        {recoveryMessage && <p role="status" style={{ marginBottom: 0, fontSize: 14 }}>{recoveryMessage}</p>}
+        <p style={{ fontSize: 12, color: 'var(--muted)' }}>Recovery mode: automatic sync is paused. Force Sync requires a backup request and retains all queued records after HTTP success. Confirm the JSON file was saved to Files and verify MySQL records before retrying or deleting anything. Duplicate uploads are possible without server-side deduplication.</p>
+      </section>
+
       {/* Stats */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12 }}>
         <StatCard label="Total Created" value={stats.totalCreated} icon="➕" color="#22c55e" />

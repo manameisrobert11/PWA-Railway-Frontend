@@ -11,6 +11,8 @@ import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs/dist/exceljs.min.js';
 import { saveAs } from 'file-saver';
 
+// Recovery build: preserve offline queues until the operator verifies MySQL records.
+const RECOVERY_MODE = true;
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const api = (p) => {
   const path = p.startsWith('/') ? p : `/${p}`;
@@ -259,6 +261,8 @@ export default function App() {
   const [pendingMainCount, setPendingMainCount] = useState(0);
   const [pendingAltCount, setPendingAltCount] = useState(0);
   const [isSyncing, setIsSyncing] = useState(false);
+  const recoveryBackupRequested = useRef(false);
+  const recoveryUploadAttempted = useRef(false);
 
   const totalPendingCount = pendingMainCount + pendingAltCount;
   const currentModePendingCount = modeIsAlt(mode) ? pendingAltCount : pendingMainCount;
@@ -608,7 +612,7 @@ export default function App() {
       });
 
       if (resp.ok) {
-        await idbClear(items.map((x) => x.id), m);
+        if (!RECOVERY_MODE) await idbClear(items.map((x) => x.id), m);
 
         const [countResp, pageResp] = await Promise.all([
           fetch(api(endpoints.stagedCount(m))),
@@ -647,6 +651,7 @@ export default function App() {
   }, []);
 
   const handleManualSync = useCallback(async () => {
+    if (RECOVERY_MODE) { setStatus('Recovery mode: use Admin Panel to back up scans first.'); return; }
     if (!isOnline || isSyncing) return;
 
     setIsSyncing(true);
@@ -677,7 +682,7 @@ export default function App() {
 
   useEffect(() => {
     async function flushBoth() {
-      if (!isOnline) return;
+      if (RECOVERY_MODE || !isOnline) return;
       await flushQueueForMode('main');
       await flushQueueForMode('alt');
       await updatePendingCounts();
@@ -690,6 +695,7 @@ export default function App() {
   }, [isOnline, flushQueueForMode, updatePendingCounts]);
 
   async function flushLocalQueueBeforeExport({ useAlt = false } = {}) {
+    if (RECOVERY_MODE) return { flushed: 0, error: 'Recovery mode: automatic upload disabled. Use Admin Panel backup first.' };
     try {
       const m = useAlt ? 'alt' : 'main';
       const items = await idbAll(m);
@@ -1352,11 +1358,58 @@ export default function App() {
     }
   };
 
+  const checkRecoveryQueues = async () => {
+    const [main, alt] = await Promise.all([idbAll('main'), idbAll('alt')]);
+    return { main: main.length, alt: alt.length, total: main.length + alt.length };
+  };
+
+  const backupRecoveryQueues = async () => {
+    const [main, alt] = await Promise.all([idbAll('main'), idbAll('alt')]);
+    const backup = {
+      format: 'railway-offline-queue-backup-v1',
+      exportedAt: new Date().toISOString(),
+      origin: window.location.origin,
+      main, alt,
+    };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `railway-pending-scans-${Date.now()}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    recoveryBackupRequested.current = true;
+    return { main: main.length, alt: alt.length, total: main.length + alt.length };
+  };
+
+  const forceRecoverySync = async () => {
+    if (!recoveryBackupRequested.current) throw new Error('Request and save a backup first.');
+    if (recoveryUploadAttempted.current) throw new Error('Upload already attempted in this session. Verify the server before retrying to avoid duplicates.');
+    if (isSyncing) throw new Error('A sync is already running');
+    if (!navigator.onLine) throw new Error('Device appears offline');
+    const before = await checkRecoveryQueues();
+    if (!before.total) return { before, synced: 0, errors: [], remaining: 0 };
+    recoveryUploadAttempted.current = true;
+    setIsSyncing(true);
+    try {
+      const main = await flushQueueForMode('main');
+      const alt = await flushQueueForMode('alt');
+      const after = await checkRecoveryQueues();
+      await updatePendingCounts();
+      const errors = [main.error, alt.error].filter(Boolean);
+      return { before, synced: (main.flushed || 0) + (alt.flushed || 0), errors, remaining: after.total };
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   if (showAdmin) {
     return (
       <div style={{ minHeight: '100vh', background: '#fff' }}>
         <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
-          <AdminPanel onBack={() => setShowAdmin(false)} />
+          <AdminPanel onBack={() => setShowAdmin(false)} onCheckRecovery={checkRecoveryQueues} onBackupRecovery={backupRecoveryQueues} onForceRecoverySync={forceRecoverySync} />
         </div>
       </div>
     );

@@ -10,6 +10,7 @@ import * as XLSX from 'xlsx';
 // kept because already in your project
 import ExcelJS from 'exceljs/dist/exceljs.min.js';
 import { saveAs } from 'file-saver';
+import QRCode from 'qrcode';
 
 // Recovery build: preserve offline queues until the operator verifies MySQL records.
 const RECOVERY_MODE = true;
@@ -1095,6 +1096,75 @@ export default function App() {
     }
   };
 
+  // ExcelJS embeds actual QR PNG images generated from each record's original QR payload.
+  const exportExcelWithQrImages = async (rows, filenamePrefix) => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Scans with QR', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+      pageSetup: { orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+    });
+    const headers = [
+      'Serial', 'Stage', 'Operator', 'Wagon1ID', 'Wagon2ID', 'Wagon3ID',
+      'ReceivedAt', 'LoadedAt', 'Destination', 'Grade', 'RailType',
+      'Spec', 'Length', 'QRRaw', 'Timestamp', 'QR Code',
+    ];
+    sheet.addRow(headers);
+    sheet.columns = [
+      { width: 20 }, { width: 14 }, { width: 18 }, { width: 16 },
+      { width: 16 }, { width: 16 }, { width: 22 }, { width: 18 },
+      { width: 18 }, { width: 12 }, { width: 14 }, { width: 22 },
+      { width: 12 }, { width: 48 }, { width: 26 }, { width: 18 },
+    ];
+    const header = sheet.getRow(1);
+    header.height = 30;
+    header.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    header.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF17365D' } };
+    header.alignment = { vertical: 'middle', wrapText: true };
+    sheet.autoFilter = { from: 'A1', to: 'P1' };
+
+    // Keep QR images fully inside their corresponding row; all rows print together.
+    for (let index = 0; index < rows.length; index++) {
+      const r = rows[index];
+      const values = [
+        r.serial || '', r.stage || '', r.operator || '',
+        r.wagon1Id ?? r.wagonId1 ?? '', r.wagon2Id ?? r.wagonId2 ?? '',
+        r.wagon3Id ?? r.wagonId3 ?? '', r.receivedAt || '',
+        r.loadedAt || '', r.destination || '', r.grade || '',
+        r.railType || '', r.spec || '', r.lengthM || '',
+        r.qrRaw || '', r.timestamp || '', '',
+      ];
+      const row = sheet.addRow(values);
+      row.height = 85;
+      row.alignment = { vertical: 'middle', wrapText: true };
+      if (index % 2 === 1) {
+        row.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F6FA' } };
+      }
+      // qrRaw recreates the original scannable QR; serial is fallback for damaged codes.
+      const qrContent = String(r.qrRaw || r.serial || '').trim();
+      if (qrContent) {
+        const png = await QRCode.toDataURL(qrContent, {
+          type: 'image/png', errorCorrectionLevel: 'M', margin: 1, width: 220,
+        });
+        const imageId = workbook.addImage({ base64: png, extension: 'png' });
+        sheet.addImage(imageId, {
+          tl: { col: 15.15, row: index + 1.12 },
+          ext: { width: 102, height: 102 },
+          editAs: 'oneCell',
+        });
+      }
+      if ((index + 1) % 50 === 0) {
+        setStatus(`Generating QR images: ${index + 1}/${rows.length}`);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+    const buffer = await workbook.xlsx.writeBuffer();
+    const filename = `${filenamePrefix}_${new Date().toISOString().replace(/[:.]/g, '-')}.xlsx`;
+    saveAs(new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }), filename);
+    return { success: true, filename, count: rows.length };
+  };
+
   // Full export: fetch ALL server pages, not just the 200 visible on screen.
   // Recovery mode: exporting never uploads or deletes IndexedDB queue entries.
   const fetchEveryStagedPage = async (m) => {
@@ -1183,12 +1253,11 @@ export default function App() {
       }
       if (!rows.length) { alert('No scans available to export.'); return; }
       const prefix = `${modeIsAlt(m) ? 'Alt' : 'Master'}_${serverError ? 'PARTIAL' : 'Complete'}`;
-      const result = await exportLocalToExcel(rows, prefix);
+      const result = imageRequested
+        ? await exportExcelWithQrImages(rows, `${prefix}_QR`)
+        : await exportLocalToExcel(rows, prefix);
       if (!result.success) throw new Error(result.error || 'Excel generation failed');
       setStatus(`Excel exported: ${result.count} records (${serverCount} server records; ${queuedCount} locally queued).`);
-      if (imageRequested) {
-        alert(`Exported ${result.count} records. This complete-data export does not embed QR code images.`);
-      }
     } catch (error) {
       console.error('Complete Excel export failed:', error);
       alert(`Excel export failed: ${error.message}`);

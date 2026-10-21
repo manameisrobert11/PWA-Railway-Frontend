@@ -1095,238 +1095,112 @@ export default function App() {
     }
   };
 
-  const exportXlsmForMode = async (m) => {
-    try {
-      const offlineItems = await idbAll(m);
-      const offlineRows = offlineItems.map((x) => x.payload || x);
+  // Full export: fetch ALL server pages, not just the 200 visible on screen.
+  // Recovery mode: exporting never uploads or deletes IndexedDB queue entries.
+  const fetchEveryStagedPage = async (m) => {
+    const result = [];
+    const cursorsSeen = new Set();
+    let cursor = null;
+    let expectedTotal = null;
 
-      if (!isOnline) {
-        setStatus('Offline — exporting local data...');
+    for (let page = 0; page < 10000; page++) {
+      const query = new URLSearchParams({ limit: '200' });
+      if (cursor !== null) query.set('cursor', String(cursor));
+      const response = await fetch(api(`${endpoints.staged(m)}?${query.toString()}`), {
+        cache: 'no-store',
+      });
+      if (!response.ok) throw new Error(`Staged records request failed (HTTP ${response.status})`);
+      const body = await response.json();
+      if (!Array.isArray(body.rows)) throw new Error('Unexpected staged records response');
+      if (Number.isFinite(Number(body.total))) expectedTotal = Number(body.total);
+      result.push(...body.rows);
 
-        const displayedScans = modeIsAlt(m) ? scansAlt : scansMain;
-
-        const seenSerials = new Set();
-        const allRows = [];
-
-        for (const scan of displayedScans) {
-          const key = normalizeSerial(scan.serial);
-          if (key && !seenSerials.has(key)) {
-            seenSerials.add(key);
-            allRows.push(scan);
-          }
+      if (body.nextCursor === null || body.nextCursor === undefined || body.nextCursor === '') {
+        if (expectedTotal !== null && result.length < expectedTotal) {
+          throw new Error(`Incomplete server data: received ${result.length} of ${expectedTotal} records`);
         }
-
-        for (const row of offlineRows) {
-          const key = normalizeSerial(row.serial);
-          if (key && !seenSerials.has(key)) {
-            seenSerials.add(key);
-            allRows.push(row);
-          }
-        }
-
-        if (allRows.length === 0) {
-          alert('No scans to export.');
-          setStatus('No scans to export');
-          return;
-        }
-
-        const result = await exportLocalToExcel(allRows, modeIsAlt(m) ? 'Alt_Offline' : 'Master_Offline');
-
-        if (result.success) {
-          setStatus(`Exported ${result.count} scans (offline) — ${result.filename}`);
-        } else {
-          throw new Error(result.error);
-        }
-        return;
+        return result;
       }
-
-      setStatus('Preparing export — syncing local queue...');
-      const flush = await flushLocalQueueBeforeExport({ useAlt: modeIsAlt(m) });
-      if (flush.error) {
-        const ok = confirm('Failed to sync offline scans to server. Export local data instead?');
-        if (ok) {
-          const displayedScans = modeIsAlt(m) ? scansAlt : scansMain;
-          const seenSerials = new Set();
-          const allRows = [];
-
-          for (const scan of displayedScans) {
-            const key = normalizeSerial(scan.serial);
-            if (key && !seenSerials.has(key)) {
-              seenSerials.add(key);
-              allRows.push(scan);
-            }
-          }
-          for (const row of offlineRows) {
-            const key = normalizeSerial(row.serial);
-            if (key && !seenSerials.has(key)) {
-              seenSerials.add(key);
-              allRows.push(row);
-            }
-          }
-
-          const result = await exportLocalToExcel(allRows, modeIsAlt(m) ? 'Alt_Local' : 'Master_Local');
-          if (result.success) {
-            setStatus(`Exported ${result.count} scans (local) — ${result.filename}`);
-          } else {
-            throw new Error(result.error);
-          }
-          return;
-        } else {
-          setStatus('Export cancelled');
-          return;
-        }
-      } else if (flush.flushed > 0) {
-        setStatus(`Flushed ${flush.flushed} local scans — exporting...`);
-      } else {
-        setStatus('No local queued scans — exporting server data...');
-      }
-
-      const resp = await fetch(api(endpoints.exportXlsm(m)), { method: 'POST' });
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => '');
-        throw new Error(text || `HTTP ${resp.status}`);
-      }
-      const dispo = resp.headers.get('Content-Disposition') || '';
-      const match = dispo.match(/filename="?([^"]+)"?/i);
-      const filename = match?.[1] || `${modeIsAlt(m) ? 'Alt' : 'Master'}_${Date.now()}.xlsm`;
-
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      setStatus(`Exported ${filename}`);
-    } catch (e) {
-      console.error('Export failed:', e);
-      alert(`Export failed: ${e.message}`);
-      setStatus('Export failed');
+      const next = String(body.nextCursor);
+      if (cursorsSeen.has(next)) throw new Error('Server repeated a pagination cursor; export stopped to prevent missing scans');
+      cursorsSeen.add(next);
+      if (!body.rows.length) throw new Error('Server returned an empty page with another cursor');
+      cursor = next;
     }
+    throw new Error('Pagination safety limit reached');
   };
 
-  const exportXlsm = () => exportXlsmForMode(mode);
+  const buildCompleteExportRows = async (m) => {
+    const queued = (await idbAll(m)).map((entry) => entry.payload || entry);
+    let serverRows = [];
+    let serverError = null;
+    try {
+      serverRows = await fetchEveryStagedPage(m);
+    } catch (error) {
+      serverError = error;
+      console.error('Complete staged scan retrieval failed:', error);
+    }
 
-  const exportXlsxWithImages = async () => {
+    // A server ID identifies an existing record. Offline scans lack a server ID,
+    // so match them on serial/stage/timestamp when possible. Preserve distinct
+    // scan events, including repeated serials recorded at different times.
+    const combined = [...serverRows];
+    const keys = new Set();
+    const serialAndStage = new Set();
+    const makeKey = (r) => [String(r.serial || '').trim().toUpperCase(),
+      String(r.stage || '').trim().toLowerCase(), String(r.timestamp || '')].join('|');
+    for (const r of serverRows) {
+      keys.add(makeKey(r));
+      serialAndStage.add([String(r.serial || '').trim().toUpperCase(), String(r.stage || '').trim().toLowerCase()].join('|'));
+    }
+    for (const r of queued) {
+      const key = makeKey(r);
+      const serialKey = [String(r.serial || '').trim().toUpperCase(), String(r.stage || '').trim().toLowerCase()].join('|');
+      if (keys.has(key)) continue;
+      // If a scan was uploaded with a server-generated timestamp, the original
+      // offline timestamp may differ; avoid counting the same rail twice.
+      if (serialAndStage.has(serialKey)) continue;
+      keys.add(key);
+      serialAndStage.add(serialKey);
+      combined.push(r);
+    }
+    return { rows: combined, serverCount: serverRows.length, queuedCount: queued.length, serverError };
+  };
+
+  const exportCompleteForMode = async (m, imageRequested = false) => {
     if (exporting) return;
     setExporting(true);
-
     try {
-      const offlineItems = await idbAll(mode);
-      const offlineRows = offlineItems.map((x) => x.payload || x);
-
-      if (!isOnline) {
-        setStatus('Offline — exporting local data (without QR images)...');
-
-        const displayedScans = scans;
-        const seenSerials = new Set();
-        const allRows = [];
-
-        for (const scan of displayedScans) {
-          const key = normalizeSerial(scan.serial);
-          if (key && !seenSerials.has(key)) {
-            seenSerials.add(key);
-            allRows.push(scan);
-          }
-        }
-        for (const row of offlineRows) {
-          const key = normalizeSerial(row.serial);
-          if (key && !seenSerials.has(key)) {
-            seenSerials.add(key);
-            allRows.push(row);
-          }
-        }
-
-        if (allRows.length === 0) {
-          alert('No scans to export.');
-          setStatus('No scans to export');
-          setExporting(false);
-          return;
-        }
-
-        const result = await exportLocalToExcel(allRows, modeIsAlt(mode) ? 'Alt_Offline' : 'Master_Offline');
-
-        if (result.success) {
-          setStatus(`Exported ${result.count} scans (offline, no QR images) — ${result.filename}`);
-        } else {
-          throw new Error(result.error);
-        }
-        setExporting(false);
-        return;
+      setStatus(`Collecting all ${m.toUpperCase()} staged scans for Excel...`);
+      const { rows, serverCount, queuedCount, serverError } = await buildCompleteExportRows(m);
+      if (serverError) {
+        const proceed = window.confirm(
+          `Could not retrieve every server page: ${serverError.message}\n\n` +
+          `Only ${rows.length} locally available record(s) can be exported. ` +
+          `This is NOT a verified complete export. Export partial backup anyway?`
+        );
+        if (!proceed) { setStatus('Incomplete export cancelled'); return; }
       }
-
-      setStatus('Preparing export (images) — syncing local queue...');
-      const flush = await flushLocalQueueBeforeExport({ useAlt: modeIsAlt(mode) });
-      if (flush.error) {
-        const ok = confirm('Failed to sync offline scans to server. Export local data instead (without QR images)?');
-        if (ok) {
-          const displayedScans = scans;
-          const seenSerials = new Set();
-          const allRows = [];
-
-          for (const scan of displayedScans) {
-            const key = normalizeSerial(scan.serial);
-            if (key && !seenSerials.has(key)) {
-              seenSerials.add(key);
-              allRows.push(scan);
-            }
-          }
-          for (const row of offlineRows) {
-            const key = normalizeSerial(row.serial);
-            if (key && !seenSerials.has(key)) {
-              seenSerials.add(key);
-              allRows.push(row);
-            }
-          }
-
-          const result = await exportLocalToExcel(allRows, modeIsAlt(mode) ? 'Alt_Local' : 'Master_Local');
-          if (result.success) {
-            setStatus(`Exported ${result.count} scans (local, no QR images) — ${result.filename}`);
-          } else {
-            throw new Error(result.error);
-          }
-          setExporting(false);
-          return;
-        } else {
-          setStatus('Export cancelled');
-          setExporting(false);
-          return;
-        }
-      } else if (flush.flushed > 0) {
-        setStatus(`Flushed ${flush.flushed} local scans — exporting...`);
-      } else {
-        setStatus('No local queued scans — exporting server data...');
+      if (!rows.length) { alert('No scans available to export.'); return; }
+      const prefix = `${modeIsAlt(m) ? 'Alt' : 'Master'}_${serverError ? 'PARTIAL' : 'Complete'}`;
+      const result = await exportLocalToExcel(rows, prefix);
+      if (!result.success) throw new Error(result.error || 'Excel generation failed');
+      setStatus(`Excel exported: ${result.count} records (${serverCount} server records; ${queuedCount} locally queued).`);
+      if (imageRequested) {
+        alert(`Exported ${result.count} records. This complete-data export does not embed QR code images.`);
       }
-
-      const resp = await fetch(api(endpoints.exportXlsxImages(mode)), { method: 'POST' });
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => '');
-        throw new Error(text || `HTTP ${resp.status}`);
-      }
-      const dispo = resp.headers.get('Content-Disposition') || '';
-      const match = dispo.match(/filename="?([^"]+)"?/i);
-      const filename = match?.[1] || `${modeIsAlt(mode) ? 'Alt_QR' : 'Master_QR'}_${Date.now()}.xlsx`;
-
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      setStatus(`Exported ${filename}`);
-    } catch (e) {
-      console.error('Export (images) failed:', e);
-      alert(`Export (images) failed: ${e.message}`);
-      setStatus('Export (images) failed');
+    } catch (error) {
+      console.error('Complete Excel export failed:', error);
+      alert(`Excel export failed: ${error.message}`);
+      setStatus('Excel export failed');
     } finally {
       setExporting(false);
     }
   };
+
+  const exportXlsmForMode = (m) => exportCompleteForMode(m, false);
+  const exportXlsm = () => exportXlsmForMode(mode);
+  const exportXlsxWithImages = () => exportCompleteForMode(mode, true);
 
   const clearAllForCurrentMode = async () => {
     const pw = window.prompt(`Enter password to clear ALL ${mode.toUpperCase()} scans:`);

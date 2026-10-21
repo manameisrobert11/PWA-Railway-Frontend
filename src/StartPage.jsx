@@ -343,23 +343,58 @@ export default function StartPage({
     async function fetchStats() {
       setLoading(true);
       try {
-        const [mainCountRes, altCountRes, mainScansRes, altScansRes] = await Promise.all([
-          fetch(api('/staged/count')),
-          fetch(api('/staged-alt/count')),
-          fetch(api('/staged?limit=500')),
-          fetch(api('/staged-alt?limit=500')),
-        ]);
+        // The API paginates staged scans (often 100 per response).
+        // Fetch every page so dashboard totals and charts never stop at 500.
+        async function fetchEveryScan(path) {
+          const rowsById = new Map();
+          const seenCursors = new Set();
+          let cursor = null;
+          let expectedTotal = null;
 
-        const mainCount = await mainCountRes.json().catch(() => ({ count: 0 }));
-        const altCount = await altCountRes.json().catch(() => ({ count: 0 }));
-        const mainScans = await mainScansRes.json().catch(() => ({ rows: [] }));
-        const altScans = await altScansRes.json().catch(() => ({ rows: [] }));
+          for (let page = 0; page < 10000; page++) {
+            const query = `?limit=200${cursor == null ? '' : `&cursor=${encodeURIComponent(cursor)}`}`;
+            const response = await fetch(api(`${path}${query}`), { cache: 'no-store' });
+            if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
+            const data = await response.json();
+            if (!Array.isArray(data.rows)) throw new Error(`${path}: invalid scan response`);
+            if (Number.isFinite(Number(data.total)) && data.total != null) {
+              expectedTotal = Number(data.total);
+            }
+            for (const row of data.rows) {
+              const key = row.id != null ? `id:${row.id}` : `row:${JSON.stringify(row)}`;
+              rowsById.set(key, row);
+            }
+            const next = data.nextCursor;
+            if (next == null || next === '') {
+              if (expectedTotal != null && rowsById.size < expectedTotal) {
+                throw new Error(`${path}: retrieved ${rowsById.size} of ${expectedTotal} scans`);
+              }
+              return [...rowsById.values()];
+            }
+            if (seenCursors.has(String(next))) {
+              throw new Error(`${path}: repeated pagination cursor`);
+            }
+            seenCursors.add(String(next));
+            cursor = next;
+          }
+          throw new Error(`${path}: pagination safety limit reached`);
+        }
+
+        const [mainCountRes, altCountRes, mainRows, altRows] = await Promise.all([
+          fetch(api('/staged/count'), { cache: 'no-store' }),
+          fetch(api('/staged-alt/count'), { cache: 'no-store' }),
+          fetchEveryScan('/staged'),
+          fetchEveryScan('/staged-alt'),
+        ]);
+        if (!mainCountRes.ok || !altCountRes.ok) throw new Error('Unable to load scan counts');
+        const mainCount = await mainCountRes.json();
+        const altCount = await altCountRes.json();
 
         setStats({
-          mainTotal: mainCount.count || 0,
-          altTotal: altCount.count || 0,
-          mainScans: mainScans.rows || [],
-          altScans: altScans.rows || [],
+          mainTotal: Number(mainCount.count ?? mainRows.length),
+          altTotal: Number(altCount.count ?? altRows.length),
+          mainScans: mainRows,
+          altScans: altRows,
         });
       } catch (e) {
         console.error('Failed to fetch stats:', e);
